@@ -11,16 +11,16 @@ WORK=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 BOARD=${BOARD:-root@192.168.1.100}
 REMOTE_DIR=${REMOTE_DIR:-/root/gpio3a1}
 
-for f in "$WORK/drivers/gpio3a1/gpio3a1.ko" \
-	 "$WORK/dts/gpio3a1.dtbo" \
-	 "$WORK/apps/gpio3a1_cli/gpio3a1_cli"; do
-	[ -f "$f" ] || { echo "missing $f, run scripts/build_all.sh" >&2; exit 1; }
+for f in "$WORK/out/gpio3a1.ko" \
+	 "$WORK/out/gpio3a1.dtbo" \
+	 "$WORK/out/gpio3a1_cli"; do
+	[ -f "$f" ] || { echo "missing $f, run 'make' in $WORK" >&2; exit 1; }
 done
 
 ssh "$BOARD" "mkdir -p $REMOTE_DIR /boot/overlays"
-scp "$WORK/drivers/gpio3a1/gpio3a1.ko" \
-    "$WORK/dts/gpio3a1.dtbo" \
-    "$WORK/apps/gpio3a1_cli/gpio3a1_cli" \
+scp "$WORK/out/gpio3a1.ko" \
+    "$WORK/out/gpio3a1.dtbo" \
+    "$WORK/out/gpio3a1_cli" \
     "$BOARD:$REMOTE_DIR/"
 
 ssh "$BOARD" "REMOTE_DIR=$REMOTE_DIR sh -s" <<'EOF'

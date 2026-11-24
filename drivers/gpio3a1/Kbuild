@@ -1,0 +1,7 @@
+# SPDX-License-Identifier: GPL-2.0
+# Kbuild fragment for the GPIO3_A1 out-of-tree module.
+#
+# It is intentionally not a standalone Makefile: the top-level Makefile copies
+# it with gpio3a1.c into a temporary staging directory, runs Kbuild there, and
+# moves the resulting gpio3a1.ko to out/.
+obj-m := gpio3a1.o

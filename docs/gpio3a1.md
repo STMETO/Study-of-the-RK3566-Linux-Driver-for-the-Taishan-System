@@ -7,25 +7,25 @@
 
 ```
 gpio3a1/
+├── Makefile                   # 统一构建入口，产物写入 out/
 ├── drivers/gpio3a1/
 │   ├── gpio3a1.c              # platform + misc 字符驱动，/dev/gpio3a1
-│   └── Makefile               # out-of-tree Kbuild
+│   └── Kbuild                 # obj-m 片段，由顶层 Makefile 调用
 ├── dts/
 │   ├── gpio3a1-overlay.dts    # 主用：/plugin/ overlay，引用 &gpio3、&pinctrl
-│   ├── gpio3a1.dtbo           # 编译产物（gitignore）
-│   ├── tspi-rk3566-gpio3a1.dts   # 备用：整颗板级 DTS 包装
-│   └── tspi-rk3566-gpio3a1.dtb   # 编译产物（gitignore）
+│   └── tspi-rk3566-gpio3a1.dts   # 备用：整颗板级 DTS 包装
 ├── apps/gpio3a1_cli/
-│   ├── gpio3a1_cli.c          # get / set / toggle
-│   └── Makefile
+│   └── gpio3a1_cli.c          # get / set / toggle
 ├── scripts/
-│   ├── build_drv.sh           # 编译 .ko
-│   ├── build_dtbo.sh          # 编译 .dtbo
-│   ├── build_dtb.sh           # 编译整颗 .dtb（备用）
-│   ├── build_app.sh           # 交叉编译 CLI
-│   ├── build_all.sh           # 上面三项
 │   ├── verify_dtbo.sh         # 用 fdtoverlay 对基准 dtb 验证 overlay
-│   └── install_to_board.sh    # ssh/scp 部署到板子
+│   ├── install_to_board.sh    # ssh/scp 部署到板子
+│   └── set_overlay.sh         # 板端登记 ubootEnv overlay
+├── out/                       # 构建产物（make 生成，gitignore）
+│   ├── gpio3a1.ko
+│   ├── gpio3a1.dtbo
+│   ├── gpio3a1_cli
+│   └── tspi-rk3566-gpio3a1.dtb   # 仅 make dtb 时生成
+├── build/                     # 中间文件（自动创建/删除，gitignore）
 └── docs/gpio3a1.md            # 本文
 ```
 
@@ -72,6 +72,9 @@ gpio3a1: gpio3a1 {
 
 ## 3. 编译
 
+所有构建都通过工程根目录的顶层 `Makefile` 完成，最终产物统一写入 `out/`；
+Kbuild、cpp、dtc 产生的中间文件放在 `build/` 下，目标结束时会自动删除。
+
 先准备一次内核（生成 `.config`、`Module.symvers` 和基准 dtb；只产生编译产物，不改源码）：
 
 ```bash
@@ -83,13 +86,27 @@ cd /build/sdk
 然后：
 
 ```bash
-/build/work/gpio3a1/scripts/build_all.sh        # .ko + .dtbo + CLI
-/build/work/gpio3a1/scripts/build_dtb.sh        # 可选：整颗 dtb
-/build/work/gpio3a1/scripts/verify_dtbo.sh      # 无需板子，验证 overlay 能叠加
+cd /build/work/gpio3a1
+make                    # .ko + .dtbo + CLI -> out/
+make dtb                # 可选：整颗 dtb -> out/tspi-rk3566-gpio3a1.dtb
+make verify             # 无需板子，验证 overlay 能叠加
+make clean              # 删除 out/ 与 build/
 ```
 
-`verify_dtbo.sh` 会用 `fdtoverlay` 把 `gpio3a1.dtbo` 叠到 SDK 基准 dtb 上，
-并打印合并后的 `gpio3a1` 节点，确认标签引用正确。
+`make` 后 `out/` 中只有最终产物：
+
+```
+out/gpio3a1.ko
+out/gpio3a1.dtbo
+out/gpio3a1_cli
+```
+
+`verify_dtbo.sh`（`make verify` 调用）会用 `fdtoverlay` 把 `out/gpio3a1.dtbo`
+叠到 SDK 基准 dtb 上，并打印合并后的 `gpio3a1` 节点，确认标签引用正确；
+临时合并的 dtb 用完即删，不会留在 `out/`。
+
+可用变量覆盖默认路径，例如 `make SDK=/path/to/sdk OUT=/tmp/out`；
+`make help` 会列出全部目标和变量。
 
 ## 4. 部署到板子
 
@@ -113,7 +130,7 @@ reboot
 insmod /root/gpio3a1/gpio3a1.ko
 ```
 
-方式 B（备用）：用 `tspi-rk3566-gpio3a1.dtb` 替换 boot.img 中的 dtb 后烧录。
+方式 B（备用）：`make dtb` 生成 `out/tspi-rk3566-gpio3a1.dtb`，用它替换 boot.img 中的 dtb 后烧录。
 适合不重启 U-Boot overlay 机制、或要固定进固件的场景。
 
 ## 5. 使用

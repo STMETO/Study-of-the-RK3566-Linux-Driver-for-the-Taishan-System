@@ -6,7 +6,7 @@
  * unmodified SDK board DTS and then appends the GPIO3_A1 node, so it can be
  * compiled into a complete .dtb without editing the SDK source tree.
  *
- * Build:   scripts/build_dtb.sh   ->  dts/tspi-rk3566-gpio3a1.dtb
+ * Build:   make dtb   ->  out/tspi-rk3566-gpio3a1.dtb
  * Use it when you need to replace the DTB inside boot.img instead of
  * applying a runtime overlay.
  *

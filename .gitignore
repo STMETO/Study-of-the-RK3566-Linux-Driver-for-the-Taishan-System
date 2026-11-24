@@ -1,25 +1,6 @@
-# 编译产物
-*.o
-*.ko
-*.mod
-*.mod.c
-*.cmd
-.*.cmd
-*.d
-*.symvers
-Module.symvers
-modules.order
-*.dtb
-*.dtbo
-
-# 应用二进制
-apps/gpio3a1_cli/gpio3a1_cli
-
-# 本地产物目录
-build/
-out/
-output/
-tmp/
+# 构建产物：最终产物 out/，中间目录 build/（构建结束会自动删除）
+/out/
+/build/
 
 # 编辑器
 .vscode/
