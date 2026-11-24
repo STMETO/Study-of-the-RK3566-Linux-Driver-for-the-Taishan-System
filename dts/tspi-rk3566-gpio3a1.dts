@@ -1,35 +1,97 @@
 // SPDX-License-Identifier: GPL-2.0
 /*
  * tspi-rk3566-gpio3a1.dts - standalone board DTS for GPIO3_A1 (TaishanPi)
- *
- * Backup / full-image variant of gpio3a1-overlay.dts.  It #includes the
- * unmodified SDK board DTS and then appends the GPIO3_A1 node, so it can be
- * compiled into a complete .dtb without editing the SDK source tree.
- *
- * Build:   make dtb   ->  out/tspi-rk3566-gpio3a1.dtb
- * Use it when you need to replace the DTB inside boot.img instead of
- * applying a runtime overlay.
- *
- * Note: the SDK board DTS starts with /dts-v1/, therefore this wrapper must
- * not have its own /dts-v1/ before the include.
+ * 这是 gpio3a1-overlay.dts 的备用完整板级DTS版本
+ * 它 #include 未经修改的SDK原厂板级DTS，然后追加我们自己的GPIO3_A1节点；
+ * 不需要修改SDK内核源码，就可以编译生成一份独立完整的 .dtb
+ * 编译命令：make dtb，产物输出到 out/tspi-rk3566-gpio3a1.dtb
+ * 使用场景：不想用overlay补丁，直接替换boot.img里面的dtb固件时使用
+ * 重点注意：被include的 tspi-rk3566-user-v10-linux.dts 内部已经写了 /dts-v1/;
+ * 所以这个包装DTS在include之前，不能再写一遍 /dts-v1/;，否则DTC编译报错
  */
 
+// # /dts-v1/是什么
+// 它是 DTC（设备树编译器）识别的版本标记，是一个设备树版本魔术标记，不是普通节点、不是属性。
+// 语法上它是一个根节点版本声明，代表：这份 DTS 文件遵循 DTS v1 语法规范。
+// DTC 规则：一份最终合并后的完整设备树，有且只能有一个 /dts-v1/;
+
+// 引入泰山派原厂顶层板级DTS，继承板子全部硬件描述（I2C/SPI/UART/pinctrl/LED等）
 #include "tspi-rk3566-user-v10-linux.dts"
 
+// 引用标签 &pinctrl：在SoC的pinctrl节点下面追加我们自己的引脚分组
+// &pinctrl 的原始定义在 rk3566.dtsi / rk3568-pinctrl.dtsi
+// pinctrl 这一段：只定义「引脚配置方案」，它本身不是设备，不会被驱动 probe
+// 里面写了：3 号 bank、PA1、复用为 GPIO、无上下拉。
+// 相当于：预先存好一套引脚参数模板，放在 pinctrl 子系统里。
 &pinctrl {
-	gpio3a1 {
-		gpio3a1_pin: gpio3a1-pin {
-			rockchip,pins = <3 RK_PA1 RK_FUNC_GPIO &pcfg_pull_none>;
-		};
-	};
+    // 自定义一个pinctrl功能组名字：gpio3a1
+    gpio3a1 {
+        // 定义引脚组，标签 gpio3a1_pin，后面可以用 &gpio3a1_pin 引用这个分组
+        gpio3a1_pin: gpio3a1-pin {
+            /*
+             rockchip,pins = <bank pin func pull_cfg>
+             bank=3      → GPIO3 组
+             RK_PA1=1    → PA1引脚
+             RK_FUNC_GPIO → 设置为GPIO模式，不是UART/SPI等复用功能
+             &pcfg_pull_none → 引用预定义配置：无上下拉
+             */
+            rockchip,pins = <3 RK_PA1 RK_FUNC_GPIO &pcfg_pull_none>;
+			// ↑ rockchip,pins：【厂商绑定属性，关键字，名字不能改】，是瑞芯微pinctrl驱动识别的属性
+        };
+    };
 };
 
+
+
+// 1. gpio3a1：是你自定义的 platform 外设节点
+// 内核扫描到这个节点，找到 compatible = "work,gpio3a1" 匹配的驱动，执行 `probe。
+// 2. probe 过程里，内核 pinctrl 子系统自动帮你把这套配置生效，不是驱动自己去写寄存器。
+
+// / { ... } 代表根节点，在整个设备树的根下面新增我们的gpio3a1设备节点
 / {
-	gpio3a1: gpio3a1 {
-		compatible = "work,gpio3a1";
-		status = "okay";
-		gpios = <&gpio3 RK_PA1 GPIO_ACTIVE_HIGH>;
-		pinctrl-names = "default";
-		pinctrl-0 = <&gpio3a1_pin>;
-	};
+    // 节点名字gpio3a1，同时打上标签gpio3a1，方便别的地方引用
+    gpio3a1: gpio3a1 {
+        // compatible 匹配字符串，驱动里面of_match_table和这个字符串对上，驱动就会probe这个节点
+        compatible = "work,gpio3a1";
+
+        // status = "okay"：启用这个节点；disabled=关闭
+        status = "okay";
+
+        // gpios属性：声明用到的GPIO
+        // &gpio3：GPIO3控制器；RK_PA1；GPIO_ACTIVE_HIGH：高电平有效
+        gpios = <&gpio3 RK_PA1 GPIO_ACTIVE_HIGH>;
+		// ↑ gpios：【标准DT核心关键字，名字固定不可改】
+
+        // pinctrl-names：引脚状态名字，default是默认状态
+        pinctrl-names = "default";
+		// ↑ pinctrl-names：【pinctrl子系统标准关键字，名字固定不可改】
+
+        // pinctrl-0：对应default状态，绑定上面定义好的引脚分组 &gpio3a1_pin
+        pinctrl-0 = <&gpio3a1_pin>;
+		// ↑ pinctrl-0、pinctrl-1 ... pinctrl-N：【pinctrl子系统标准关键字，前缀固定不可改】
+    };
 };
+
+
+/*
+内核解析DTB
+    ├─ 解析pinctrl下的gpio3a1_pin → 保存引脚配置模板
+    └─ 解析根节点gpio3a1（platform设备）
+           ↓
+匹配 work,gpio3a1 驱动 → probe
+           ↓
+pinctrl框架自动应用 pinctrl-0（default）→ 设置MUX、上下拉
+           ↓
+驱动 of_parse_phandle / gpiod_get(&gpio3 RK_PA1) → 获取gpio描述符
+           ↓
+驱动控制gpio高低电平
+
+
+PS:pinctrl 状态切换
+pinctrl 支持多组状态，例如：
+	pinctrl-names = "default", "sleep";
+	pinctrl-0 = <&pin_normal>;
+	pinctrl-1 = <&pin_sleep>;
+驱动可以调用 `pinctrl_select_state()` 在运行时切换；
+你这里只有 default，上电 probe 时自动切一次，之后就不变了。
+*/
