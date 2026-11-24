@@ -1,7 +1,6 @@
 # GPIO3_A1 驱动示例（泰山派 RK3566）
 
 用 out-of-tree 方式控制 **GPIO3_A1**：内核字符驱动 + 设备树 overlay + 命令行小工具。
-所有代码都在本工程目录 `/build/work/gpio3a1` 内（`/build/work` 只作为多项目容器，每个项目是独立 git 仓库），SDK 源码零修改（只读取 SDK 的头文件、设备树 include 路径和交叉工具链）。
 
 ## 1. 目录
 
