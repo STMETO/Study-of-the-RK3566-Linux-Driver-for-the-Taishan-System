@@ -1,12 +1,12 @@
 # GPIO3_A1 驱动示例（泰山派 RK3566）
 
 用 out-of-tree 方式控制 **GPIO3_A1**：内核字符驱动 + 设备树 overlay + 命令行小工具。
-所有代码都在 `/build/work` 内，SDK 源码零修改（只读取 SDK 的头文件、设备树 include 路径和交叉工具链）。
+所有代码都在本工程目录 `/build/work/gpio3a1` 内（`/build/work` 只作为多项目容器，每个项目是独立 git 仓库），SDK 源码零修改（只读取 SDK 的头文件、设备树 include 路径和交叉工具链）。
 
 ## 1. 目录
 
 ```
-work/
+gpio3a1/
 ├── drivers/gpio3a1/
 │   ├── gpio3a1.c              # platform + misc 字符驱动，/dev/gpio3a1
 │   └── Makefile               # out-of-tree Kbuild
@@ -83,9 +83,9 @@ cd /build/sdk
 然后：
 
 ```bash
-/build/work/scripts/build_all.sh        # .ko + .dtbo + CLI
-/build/work/scripts/build_dtb.sh        # 可选：整颗 dtb
-/build/work/scripts/verify_dtbo.sh      # 无需板子，验证 overlay 能叠加
+/build/work/gpio3a1/scripts/build_all.sh        # .ko + .dtbo + CLI
+/build/work/gpio3a1/scripts/build_dtb.sh        # 可选：整颗 dtb
+/build/work/gpio3a1/scripts/verify_dtbo.sh      # 无需板子，验证 overlay 能叠加
 ```
 
 `verify_dtbo.sh` 会用 `fdtoverlay` 把 `gpio3a1.dtbo` 叠到 SDK 基准 dtb 上，
@@ -96,7 +96,7 @@ cd /build/sdk
 方式 A（推荐，不动 boot.img）：SDK U-Boot 支持从 rootfs 读 `/boot/ubootEnv.txt`：
 
 ```bash
-BOARD=root@192.168.1.100 /build/work/scripts/install_to_board.sh
+BOARD=root@192.168.1.100 /build/work/gpio3a1/scripts/install_to_board.sh
 ```
 
 脚本会：
