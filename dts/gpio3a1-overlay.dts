@@ -1,57 +1,183 @@
 // SPDX-License-Identifier: GPL-2.0
 /*
- * gpio3a1-overlay.dts - device tree overlay for GPIO3_A1 (TaishanPi RK3566)
+ * 这是一个设备树Overlay插件，用于泰山派RK3566，配置GPIO3_A1
  *
- * This overlay is compiled standalone into gpio3a1.dtbo.  It references
- * nodes of the SDK base device tree by label:
+ * 该Overlay单独编译，产物是 gpio3a1.dtbo（overlay二进制文件，区别于完整dtb）
+ * 它通过标签引用底层基础设备树里已经存在的节点：
+ *   &gpio3   - GPIO bank 3控制器（定义在 rk356x.dtsi）
+ *   &pinctrl - SoC引脚控制器（定义在 rk356x.dtsi）
  *
- *   &gpio3   - GPIO bank 3 controller (rk356x.dtsi)
- *   &pinctrl - SoC pin controller       (rk356x.dtsi)
+ * 标签是在Overlay加载合并的时候，从基础DTB的 __symbols__ 符号表里面解析查找；
+ * 前提：板子原始DTB编译时开启 CONFIG_DTC_SYMBOLS=y，导出标签符号；
+ * 好处：不需要修改、重新编译SDK内核源码和原始板级DTB。
  *
- * The labels are resolved at overlay-apply time from the base FDT's
- * __symbols__ table (the SDK builds the board DTB with CONFIG_DTC_SYMBOLS=y),
- * so no SDK source file has to be touched.
+ * 部署方式：把编译好的 gpio3a1.dtbo 放到板子 /boot/overlays/ 目录；
+ * 在 /boot/ubootEnv.txt 里添加 overlays=gpio3a1.dtbo，重启生效。
  *
- * Deploy: copy gpio3a1.dtbo to /boot/overlays/ on the board, add
- * "overlays=gpio3a1.dtbo" to /boot/ubootEnv.txt, reboot.  The Rockchip
- * U-Boot (CONFIG_OF_LIBFDT_OVERLAY) merges it into the live FDT before
- * handing it to the kernel.
+ * 瑞芯微U-Boot开启了CONFIG_OF_LIBFDT_OVERLAY，在U-Boot阶段把这个overlay合并进基础设备树，
+ * 之后再把合并完成的设备树交给内核。（也有内核里动态加载overlay的方式，这里是uboot加载）
  *
- * GPIO3_A1: bank 3, group A, pin 1 -> linux gpio number 97, RK_PA1.
+ * GPIO3_A1：bank3，A组，第1号引脚，Linux全局GPIO编号97，宏RK_PA1
  *
- * Note: Rockchip pinctrl parses groups as children of a function node
- * (/pinctrl/<function>/<group>), so the group must stay nested.
+ * 重要注意：瑞芯微pinctrl驱动的解析规则：分组必须放在function节点下面，层级不能乱；
+ * 也就是 /pinctrl/功能名/引脚组 这种嵌套结构，所以这里必须保持两层嵌套。
+ * 
+ * 瑞芯微 pinctrl 驱动强制要求的树形结构（重点！）
+	/pinctrl/
+	└── 【function名字】        ← 第一层（功能节点，随便起名，比如gpio3a1）
+		└── 【group名字】       ← 第二层（引脚组节点，里面放rockchip,pins）
+
+	正确：
+		target = <&pinctrl>;
+		__overlay__ {
+			gpio3a1 {          // function 层（功能）
+				gpio3a1_pin: gpio3a1-pin {   // group 层（引脚组）
+					rockchip,pins = <3 RK_PA1 RK_FUNC_GPIO &pcfg_pull_none>;
+				};
+			};
+		};
+
+	错误：直接把 group 挂在 pinctrl 下，少一层 function
+		target = <&pinctrl>;
+		__overlay__ {
+			gpio3a1_pin: gpio3a1-pin {   // 直接挂在pinctrl下面，缺少function节点
+				rockchip,pins = <3 RK_PA1 RK_FUNC_GPIO &pcfg_pull_none>;
+			};
+		};
+
  */
 
+// /dts-v1/; 声明遵循DTS v1语法规范
 /dts-v1/;
+// /plugin/; 这是Overlay专属标记，告诉DTC：这不是完整设备树，是插件overlay，编译成dtbo
 /plugin/;
 
+// 引入宏定义头文件，和普通DTS一样，提供GPIO、pinctrl相关宏
 #include <dt-bindings/gpio/gpio.h>
 #include <dt-bindings/pinctrl/rockchip.h>
 
 / {
-	fragment@0 {
-		target-path = "/";
-		__overlay__ {
-			gpio3a1: gpio3a1 {
-				compatible = "work,gpio3a1";
-				status = "okay";
-				gpios = <&gpio3 RK_PA1 GPIO_ACTIVE_HIGH>;
-				pinctrl-names = "default";
-				pinctrl-0 = <&gpio3a1_pin>;
-			};
-		};
-	};
+    // fragment@0：第0个片段，一个overlay可以有多个fragment，用来往不同目标节点追加内容
+    fragment@0 {
+        // target-path：指定目标节点路径，这里指向设备树根节点 /
+        target-path = "/";
+        // __overlay__：固定关键字，这个大括号内部是我们要追加到目标节点下的内容
+        __overlay__ {
+            // 新增自定义platform设备节点，标签gpio3a1，供驱动匹配
+            gpio3a1: gpio3a1 {
+                // compatible 匹配字符串，驱动of_match_table和该字符串匹配，触发probe
+                compatible = "work,gpio3a1";
+                // status=okay：启用该设备
+                status = "okay";
+                // gpios属性：声明使用&gpio3控制器下的RK_PA1，高电平有效
+                gpios = <&gpio3 RK_PA1 GPIO_ACTIVE_HIGH>;
+                // pinctrl-names：引脚状态名称，default为默认状态
+                pinctrl-names = "default";
+                // pinctrl-0：绑定default状态对应的引脚分组（在fragment@1里面定义的gpio3a1_pin）
+                pinctrl-0 = <&gpio3a1_pin>;
+            };
+        };
+    };
 
-	fragment@1 {
-		target = <&pinctrl>;
-		__overlay__ {
-			gpio3a1 {
-				gpio3a1_pin: gpio3a1-pin {
-					rockchip,pins =
-						<3 RK_PA1 RK_FUNC_GPIO &pcfg_pull_none>;
-				};
-			};
-		};
-	};
+    // fragment@1：第1个片段，目标是底层dtb里的 &pinctrl 节点
+    fragment@1 {
+        // target：通过标签指定目标节点 &pinctrl，等价于 target-path="/pinctrl"
+        target = <&pinctrl>;
+        // __overlay__：要追加到pinctrl节点下的内容
+        __overlay__ {
+            // 自定义pinctrl功能组名字：gpio3a1（瑞芯微pinctrl要求的一层function节点）
+            gpio3a1 {
+                // 引脚分组，标签gpio3a1_pin，上面fragment@0里引用 &gpio3a1_pin
+                gpio3a1_pin: gpio3a1-pin {
+                    /*
+                     rockchip,pins：瑞芯微私有属性，固定关键字
+                     <bank, pin偏移, 复用功能, 上下拉配置>
+                     bank=3：GPIO3
+                     RK_PA1：bank内偏移1
+                     RK_FUNC_GPIO：复用为GPIO
+                     &pcfg_pull_none：无上下拉
+                    */
+                    rockchip,pins = <3 RK_PA1 RK_FUNC_GPIO &pcfg_pull_none>;
+                };
+            };
+        };
+    };
 };
+
+/*
+
+# RK3566 设备树Overlay简易教程
+## 一、Overlay是什么
+Overlay是设备树补丁插件，编译产物为.dtbo，不会修改原始内核DTB。
+可以在U-Boot阶段或者内核运行时动态合并到基础设备树，适合调试、外接外设，不用重新编译内核和板级DTS。
+> 前提条件：原始板级DTB编译开启 CONFIG_DTC_SYMBOLS=y，导出标签符号表 __symbols__，才能支持 &xxx 标签引用。
+
+## 二、固定头部模板（Overlay必写）
+/dts-v1/;
+/plugin/;
+- /dts-v1/：遵循DTS v1语法
+- /plugin/：DTC识别标记，代表这是overlay插件，输出dtbo而不是dtb
+
+头文件按需引入：
+#include <dt-bindings/gpio/gpio.h>
+#include <dt-bindings/pinctrl/rockchip.h>
+
+## 三、核心结构：fragment 片段
+一个overlay可以有多个fragment，每个fragment负责向基础DTB里一个目标节点追加内容。
+每个fragment内部固定结构：
+fragment@编号 {
+    target = <&xxx>;        // 方式1：标签定位目标节点（推荐）
+    target-path = "/xxx";   // 方式2：路径字符串定位目标节点，二选一
+    __overlay__ {
+        // 这里写要追加到目标节点下的节点、属性
+    };
+};
+> fragment@后面的数字只是序号，区分多个片段，无特殊含义。
+> __overlay__ 是固定关键字，包裹本次追加的内容。
+
+## 四、RK平台pinctrl写法重点（RK独有约束）
+RK pinctrl驱动强制层级：pinctrl → function节点 → group节点
+&pinctrl 下追加结构：
+__overlay__ {
+    my_func_name {          // function层，自定义名字
+        my_pin: my-pin {    // group层，加标签供外部引用
+            rockchip,pins = <bank pin func pull_cfg>;
+        };
+    };
+};
+rockchip,pins 参数说明：
+<bank, RK_Pxx, 复用功能, 上下拉配置>
+- bank：GPIO组号，如3代表GPIO3
+- RK_PA1：bank内偏移，不是全局GPIO号
+- RK_FUNC_GPIO：复用为普通GPIO
+- &pcfg_pull_none / &pcfg_pull_up / &pcfg_pull_down：上下拉配置
+
+## 五、自定义外设节点写法
+一般挂载到整机根节点 / 下，使用 target-path="/"
+__overlay__ {
+    my_dev: my_dev {
+        compatible = "vendor,devname"; // 和驱动of_match_table匹配
+        status = "okay";
+        gpios = <&gpio3 RK_PA1 GPIO_ACTIVE_HIGH>;
+        pinctrl-names = "default";
+        pinctrl-0 = <&my_pin>; // 引用pinctrl里定义好的引脚组标签
+    };
+};
+> pinctrl-names、pinctrl-0 是内核标准属性，内核probe设备时自动切换引脚状态。
+
+## 六、编译命令
+dtc -I dts -O dtbo gpio3a1-overlay.dts -o gpio3a1.dtbo
+
+## 七、泰山派U-Boot加载方式
+1. 将 dtbo 文件放到板子 /boot/overlays/
+2. 修改 /boot/ubootEnv.txt，增加：overlays=gpio3a1.dtbo
+3. 重启，U-Boot在启动内核前自动合并overlay
+
+## 八、常见踩坑点
+1. RK pinctrl 不能省略中间function层，直接把group挂在pinctrl下会解析失败
+2. 标签引用依赖基础DTB符号表，没有开启CONFIG_DTC_SYMBOLS=y会找不到&xxx
+3. overlay源码最外层的 / { fragment... } 是插件自身根容器，不是整机DTB根
+4. fragment顺序不影响最终效果，内核靠标签匹配，不看源码书写顺序
+5. 区分：target-path="/" 指向整机设备树根，不是overlay插件自己的根
+
+*/
