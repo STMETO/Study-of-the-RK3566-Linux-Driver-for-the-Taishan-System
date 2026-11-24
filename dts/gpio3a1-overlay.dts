@@ -18,6 +18,9 @@
  * handing it to the kernel.
  *
  * GPIO3_A1: bank 3, group A, pin 1 -> linux gpio number 97, RK_PA1.
+ *
+ * Note: Rockchip pinctrl parses groups as children of a function node
+ * (/pinctrl/<function>/<group>), so the group must stay nested.
  */
 
 /dts-v1/;
@@ -43,9 +46,11 @@
 	fragment@1 {
 		target = <&pinctrl>;
 		__overlay__ {
-			gpio3a1_pin: gpio3a1-pin {
-				rockchip,pins =
-					<3 RK_PA1 RK_FUNC_GPIO &pcfg_pull_none>;
+			gpio3a1 {
+				gpio3a1_pin: gpio3a1-pin {
+					rockchip,pins =
+						<3 RK_PA1 RK_FUNC_GPIO &pcfg_pull_none>;
+				};
 			};
 		};
 	};

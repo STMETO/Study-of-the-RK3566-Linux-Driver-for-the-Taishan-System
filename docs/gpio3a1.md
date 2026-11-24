@@ -44,6 +44,22 @@ gpio3a1: gpio3a1 {
 };
 ```
 
+- pinctrl 组节点必须放在**功能节点**下面（`/pinctrl/<function>/<group>`）：
+
+```dts
+&pinctrl {
+        gpio3a1 {
+                gpio3a1_pin: gpio3a1-pin {
+                        rockchip,pins = <3 RK_PA1 RK_FUNC_GPIO &pcfg_pull_none>;
+                };
+        };
+};
+```
+
+  如果直接把组节点挂在 `/pinctrl` 下，驱动 probe 时会报
+  `rockchip-pinctrl pinctrl: unable to find group for node gpio3a1-pin`，
+  平台设备绑定失败，也就不会生成 `/dev/gpio3a1`。
+
 - overlay 里的 `&gpio3`、`&pinctrl`、`&pcfg_pull_none` 都是 SDK 基准设备树
   （`kernel/arch/arm64/boot/dts/rockchip/rk356x.dtsi`、`rk3568-pinctrl.dtsi`）里已有的标签。
   编译 `.dtbo` 时 dtc 生成 `__fixups__`，应用时从基准 dtb 的 `__symbols__` 解析。

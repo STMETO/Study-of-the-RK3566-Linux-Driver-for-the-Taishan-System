@@ -17,8 +17,10 @@
 #include "tspi-rk3566-user-v10-linux.dts"
 
 &pinctrl {
-	gpio3a1_pin: gpio3a1-pin {
-		rockchip,pins = <3 RK_PA1 RK_FUNC_GPIO &pcfg_pull_none>;
+	gpio3a1 {
+		gpio3a1_pin: gpio3a1-pin {
+			rockchip,pins = <3 RK_PA1 RK_FUNC_GPIO &pcfg_pull_none>;
+		};
 	};
 };
 
