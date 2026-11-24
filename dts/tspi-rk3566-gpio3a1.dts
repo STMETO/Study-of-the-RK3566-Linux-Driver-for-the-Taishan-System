@@ -1,0 +1,33 @@
+// SPDX-License-Identifier: GPL-2.0
+/*
+ * tspi-rk3566-gpio3a1.dts - standalone board DTS for GPIO3_A1 (TaishanPi)
+ *
+ * Backup / full-image variant of gpio3a1-overlay.dts.  It #includes the
+ * unmodified SDK board DTS and then appends the GPIO3_A1 node, so it can be
+ * compiled into a complete .dtb without editing the SDK source tree.
+ *
+ * Build:   scripts/build_dtb.sh   ->  dts/tspi-rk3566-gpio3a1.dtb
+ * Use it when you need to replace the DTB inside boot.img instead of
+ * applying a runtime overlay.
+ *
+ * Note: the SDK board DTS starts with /dts-v1/, therefore this wrapper must
+ * not have its own /dts-v1/ before the include.
+ */
+
+#include "tspi-rk3566-user-v10-linux.dts"
+
+&pinctrl {
+	gpio3a1_pin: gpio3a1-pin {
+		rockchip,pins = <3 RK_PA1 RK_FUNC_GPIO &pcfg_pull_none>;
+	};
+};
+
+/ {
+	gpio3a1: gpio3a1 {
+		compatible = "work,gpio3a1";
+		status = "okay";
+		gpios = <&gpio3 RK_PA1 GPIO_ACTIVE_HIGH>;
+		pinctrl-names = "default";
+		pinctrl-0 = <&gpio3a1_pin>;
+	};
+};

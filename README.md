@@ -20,6 +20,17 @@ make -C /build/sdk/kernel-6.1 M=$PWD/drivers/<模块名> \
      modules
 ```
 
+## 示例：GPIO3_A1
+
+`drivers/gpio3a1`（字符驱动）+ `dts/`（overlay 引用 SDK 的 `&gpio3`/`&pinctrl`）
++ `apps/gpio3a1_cli`（命令行）。完整说明见 [docs/gpio3a1.md](docs/gpio3a1.md)。
+
+```bash
+scripts/build_all.sh        # .ko + .dtbo + CLI
+scripts/verify_dtbo.sh      # fdtoverlay 验证（无需板子）
+BOARD=root@<板子IP> scripts/install_to_board.sh
+```
+
 ## SDK 位置
 
 - 源码：`/build/sdk`

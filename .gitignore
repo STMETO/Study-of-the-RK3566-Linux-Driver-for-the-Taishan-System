@@ -12,6 +12,9 @@ modules.order
 *.dtb
 *.dtbo
 
+# 应用二进制
+apps/gpio3a1_cli/gpio3a1_cli
+
 # 本地产物目录
 build/
 out/
