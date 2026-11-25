@@ -1,0 +1,9 @@
+# SPDX-License-Identifier: GPL-2.0
+# led8 内核模块的 Kbuild 片段。
+#
+# 它故意不是一份独立 Makefile：顶层 Makefile 会把本文件、led8.c 和
+# include/led8_uapi.h 一起拷进临时 staging 目录，在那边执行 Kbuild，
+# 再把生成的 led8.ko 搬到 out/。
+#
+# obj-m := led8.o 的意思是：用同目录下的 led8.c 编出 led8.ko。
+obj-m := led8.o
