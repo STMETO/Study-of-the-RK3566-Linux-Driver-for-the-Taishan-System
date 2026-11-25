@@ -1,0 +1,12 @@
+CompileFlags:
+  Remove:
+    - -fno-allow-store-data-races
+    - -fconserve-stack
+    - -femit-struct-debug-baseonly
+    - -fno-var-tracking
+    - -mstack-protector-guard*
+    - -mabi=lp64
+    - -Wa,*
+    - -Wp,-MMD,*
+    - -Werror
+    - -Werror=*
