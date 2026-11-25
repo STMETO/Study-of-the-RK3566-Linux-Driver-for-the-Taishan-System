@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0
 /*
- * led8.c - 纯 cdev + platform 框架示例：虚拟 8 路 LED 调光板（泰山派 RK3566）
+ * led8.c ：虚拟 8 路 LED 调光板（泰山派 RK3566）
  *
  * ============================================================================
  * 一、这个驱动想教你什么
@@ -104,8 +104,8 @@
  *      后面 read/write/ioctl 全都从 file->private_data 拿到它。
  */
 struct led8_dev {
-	struct cdev		cdev;
-	struct device		*dev;
+	struct cdev		cdev;		// 给 VFS 用的
+	struct device		*dev;	// 给内核设备模型、sysfs、规范设备日志、扩展 sysfs 属性用的。
 	dev_t			devt;
 	struct mutex		lock;
 	u32			channels;
@@ -117,6 +117,10 @@ struct led8_dev {
  * 设备类的作用：让 /sys/class/led8/ 有统一归属，device_create 需要它；
  * 同时 udv/mdev 收到内核 uevent 后，会按 "class + dev_t" 去创建 /dev 节点。
  */
+ // struct class代表一个设备大类（比如 /sys/class/leds/、/sys/class/tty/、你这里 /sys/class/led8/）
+ // 一个 class 是一类设备的容器，不是一个设备实例的东西
+ // class 描述一类设备，所有同类型的 led8 设备实例（多个 platform 设备）共用同一个 class。
+ //如果放到led8_dev里面，那每一个设备实例都去 class_create，就会在 /sys/class/下面创建一堆同名 class，直接报错、冲突，这是错误写法。
 static struct class *led8_class;
 
 /* ==========================================================================
@@ -245,6 +249,7 @@ static ssize_t led8_read(struct file *file, char __user *buf,
 		return 0;
 
 	off = (u32)*ppos;
+	// 可以读的数量和想要读的数量取最小值
 	n = min_t(size_t, count, (size_t)(priv->channels - off));
 
 	/*
@@ -262,7 +267,8 @@ static ssize_t led8_read(struct file *file, char __user *buf,
 	if (copy_to_user(buf, kbuf, n))
 		return -EFAULT;
 
-	*ppos += n;
+	// 用户传给read的是 “希望从哪里读” 的意图；内核读完之后，要更新ppos，记下新的文件位置，给下一次 read用
+	*ppos += n;	// loff_t *ppos 既是输入参数，也是输出参数
 	return n;
 }
 
@@ -335,13 +341,13 @@ static loff_t led8_llseek(struct file *file, loff_t offset, int whence)
 	loff_t newpos;
 
 	switch (whence) {
-	case SEEK_SET:
+	case SEEK_SET:	// 从开头
 		newpos = offset;
 		break;
-	case SEEK_CUR:
+	case SEEK_CUR:	// 从当前位置
 		newpos = file->f_pos + offset;
 		break;
-	case SEEK_END:
+	case SEEK_END:	// 从结尾  offset可以为负数
 		newpos = (loff_t)priv->channels + offset;
 		break;
 	default:
@@ -385,6 +391,7 @@ static long led8_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
 	case LED8_IOC_GET_CHANNELS:
 		channels = (int)priv->channels;
 		/* put_user 是"内核值 -> 用户空间"的标量拷贝，失败返回 -EFAULT */
+		// put_user / get_user：只传单个简单变
 		if (put_user(channels, (int __user *)arg))
 			return -EFAULT;
 		return 0;
@@ -485,6 +492,9 @@ static int led8_probe(struct platform_device *pdev)
 	 * 返回 -EINVAL 通常表示属性不存在（或类型不是 u32）。
 	 * 属性缺失时我们用默认值，不报错。
 	 */
+	// np：struct device_node，设备树节点句柄；dev->of_node就是当前platform设备对应的dts节点
+	// propname：字符串，dts 里属性的名字，这里就是channels
+	// out_value：输出指针，读到的值会写到这个 u32 变量里
 	if (!of_property_read_u32(dev->of_node, "channels", &channels)) {
 		if (channels == 0 || channels > LED8_MAX_CHANNELS) {
 			dev_err(dev, "invalid channels %u (1..%u)\n",
@@ -504,6 +514,11 @@ static int led8_probe(struct platform_device *pdev)
 			goto err_free;
 		}
 		/* 上电初始亮度：所有通道先设成同一个值，默认是 0（全灭） */
+		// void *memset(void *s, int c, size_t n);
+		// s：priv->regs，目标内存起始地址，就是u8 regs[LED8_MAX_CHANNELS]数组首地址
+		// c：brightness，要填充的字节值（虽然参数类型是 int，但只会取低 8bit）
+		// n：priv->channels，要连续填充多少个字节
+		// 从 regs 起始位置开始，连续把 priv->channels 个字节，全部写成 brightness 的低 8 位
 		memset(priv->regs, brightness, priv->channels);
 	}
 
@@ -518,6 +533,10 @@ static int led8_probe(struct platform_device *pdev)
 	 * 如果像 misc 那样用固定主设备号，就要自己保证不和别人冲突，
 	 * 还要先查 /proc/devices —— 动态分配是 out-of-tree 驱动的标准做法。
 	 */
+	 // 动态分配主设备号
+	 // 第二个参数 baseminor=0只是：我们申请的这一串次设备号，从 0 开始
+	 // alloc_chrdev_region(&devt, 5, 3, "led8");
+	// 含义：内核自动选一个空闲 major，分配 minor=5、6、7 一共 3 个次设备号。
 	ret = alloc_chrdev_region(&priv->devt, 0, 1, DEVICE_NAME);
 	if (ret) {
 		dev_err(dev, "alloc_chrdev_region failed: %d\n", ret);
@@ -552,6 +571,7 @@ static int led8_probe(struct platform_device *pdev)
 	 *   - drvdata 会存进 struct device，本驱动用不到（用 platform drvdata 即可）。
 	 * 返回的是 struct device 指针，失败时是 ERR_PTR。
 	 */
+	 // rvdata = priv：私有数据指针，非常常用。内核会把这个指针存到生成的struct device的driver_data成员
 	priv->dev = device_create(led8_class, NULL, priv->devt, priv, DEVICE_NAME);
 	if (IS_ERR(priv->dev)) {
 		ret = PTR_ERR(priv->dev);
@@ -560,6 +580,10 @@ static int led8_probe(struct platform_device *pdev)
 	}
 
 	/* 把 priv 挂到 platform 设备上，remove() 时用 platform_get_drvdata 取回 */
+	// 为什么又要设置？
+	// latform_set_drvdata：服务于 platform 驱动的 remove 回调，因为 remove 只有 pdev 入参；
+	// device_create 的第四个 drvdata：服务于这个 class 设备的 sysfs 属性回调；
+	// 它们是两个不同struct device上独立的私有数据字段，存放同一个 priv 指针，各司其职，不是两套独立系统。
 	platform_set_drvdata(pdev, priv);
 
 	/*
@@ -655,6 +679,8 @@ static int __init led8_init(void)
 	 * class_create(owner, name)：6.1 内核还是两个参数。
 	 * 新内核（6.5+）改成了 class_create(name)，移植时注意。
 	 */
+	 // lass_create()：创建class大类本身（/sys/class/led8/这个顶层目录）→ 这个不能在probe里
+	 // probe可能多次执行：系统里如果有2个compatible="work,led8"的设备树节点，probe会跑两次
 	led8_class = class_create(THIS_MODULE, DEVICE_NAME);
 	if (IS_ERR(led8_class))
 		return PTR_ERR(led8_class);

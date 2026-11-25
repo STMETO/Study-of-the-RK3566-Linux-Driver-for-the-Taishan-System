@@ -45,6 +45,14 @@ struct led8_state {
  */
 #define LED8_IOC_MAGIC		'L'
 
+/*  
+	_IOR(magic, nr, type)：用户读内核（内核→用户空间输出数据）
+	_IOW(magic, nr, type)：用户写内核（用户→内核传入数据）
+	_IO(magic, nr)`：无参数，单纯下发命令，不拷贝数据
+	_IORW(magic, nr, type)  双向读写：用户和内核互相拷数据（Read + Write）
+	type（类型）不是传给内核的变量，只是给宏用来求 sizeof(type)
+*/
+
 /* 读：返回通道数（int） */
 #define LED8_IOC_GET_CHANNELS	_IOR(LED8_IOC_MAGIC, 0x01, int)
 /* 读：返回所有通道亮度（struct led8_state） */
