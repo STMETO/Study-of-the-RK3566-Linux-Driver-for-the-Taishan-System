@@ -6,3 +6,8 @@
 .vscode/
 .idea/
 *.swp
+
+# clangd 生成的索引缓存（可重建，勿提交）
+/.cache/
+# 编译数据库由内核 .cmd 生成、含绝对路径（勿提交，用 tools/clangd-setup.sh 重建）
+/compile_commands.json
