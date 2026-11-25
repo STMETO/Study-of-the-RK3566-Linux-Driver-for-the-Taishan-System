@@ -1,0 +1,39 @@
+// SPDX-License-Identifier: GPL-2.0
+/*
+ * tspi-rk3566-led8.dts - 备用方案：整颗板级 DTS（把 led8 节点直接编进 dtb）
+ *
+ * ============================================================================
+ * 什么时候用这个文件
+ * ============================================================================
+ * 主方案是 led8-overlay.dts（独立 dtbo，U-Boot 启动时合并），不用改 boot.img。
+ * 但有些场景不方便用 overlay，比如：
+ *   - 板子的 U-Boot 不读 /boot/ubootEnv.txt；
+ *   - 想把 led8 节点固化成板级 dtb 的一部分，随 boot.img 一起烧；
+ * 这时就用这个文件：make dtb 生成 out/tspi-rk3566-led8.dtb，
+ * 替换 boot.img 里原来的 dtb 即可。
+ *
+ * ============================================================================
+ * 写法
+ * ============================================================================
+ * 1. #include 原厂板级 dts（不改 SDK 源码，只是"包一层"）；
+ * 2. 在 / 根节点里追加 led8 节点（和 overlay 里的内容完全一致）。
+ *
+ * 重要：被 include 的 tspi-rk3566-user-v10-linux.dts 内部已经有 /dts-v1/;，
+ * 所以这个包装文件在 include 之前不能再写一遍，否则 dtc 会报
+ * "duplicate /dts-v1/" 之类的错误。
+ */
+
+#include "tspi-rk3566-user-v10-linux.dts"
+
+/ {
+	/*
+	 * 直接写在根节点下，等价于 overlay 的 fragment@0 + target-path="/"。
+	 * 属性含义见 dts/led8-overlay.dts 里的逐行注释。
+	 */
+	led8: led8 {
+		compatible = "work,led8";
+		status = "okay";
+		channels = <8>;
+		default-brightness = <0>;
+	};
+};

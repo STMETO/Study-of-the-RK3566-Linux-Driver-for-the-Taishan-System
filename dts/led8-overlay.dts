@@ -1,0 +1,106 @@
+// SPDX-License-Identifier: GPL-2.0
+/*
+ * led8-overlay.dts - 虚拟 8 路 LED 调光板的设备树 overlay（泰山派 RK3566）
+ *
+ * ============================================================================
+ * 这个 overlay 做了什么
+ * ============================================================================
+ * 往设备树根节点 "/" 下面加一个 platform 设备节点 led8：
+ *
+ *     led8 {
+ *         compatible = "work,led8";   <- 和 drivers/led8/led8.c 的 of_match 对上
+ *         status     = "okay";        <- 启用这个节点
+ *         channels   = <8>;           <- 通道数，驱动 probe 时解析
+ *         default-brightness = <0>;   <- 上电初始亮度
+ *     };
+ *
+ * 内核启动后，platform 总线发现这个节点，匹配到 "work,led8" 驱动，
+ * 调用 probe()，于是出现 /dev/led8。
+ *
+ * ============================================================================
+ * 为什么这个节点这么"干净"
+ * ============================================================================
+ *   - 没有 reg：它不挂在任何真实总线上（不是 i2c/spi 子节点），没有地址；
+ *   - 没有 gpios / pinctrl-*：它不占用任何物理引脚，硬件是内核内存模拟的；
+ *   - 只有 compatible + 自定义属性。
+ * 等你以后接真实外设（比如 PCA9685 挂在 &i2c2 下），节点才会长成：
+ *     &i2c2 { pca9685@40 { compatible = "..."; reg = <0x40>; ... }; };
+ *
+ * ============================================================================
+ * 编译与加载方式
+ * ============================================================================
+ * 编译：make -> out/led8.dtbo
+ *
+ * 部署（与 gpio3a1 工程相同）：
+ *   1. 把 led8.dtbo 放到板子 /boot/overlays/led8.dtbo
+ *   2. 在 /boot/ubootEnv.txt 里加一行：overlays=led8.dtbo
+ *   3. 重启，U-Boot 在把设备树交给内核之前，先把这个 overlay 合并进去
+ *
+ * 为什么是 U-Boot 合并而不是内核运行时合并？
+ *   本 SDK 的内核没有打开 CONFIG_OF_OVERLAY（configfs 动态加载），
+ *   但瑞芯微 U-Boot 打开了 CONFIG_OF_LIBFDT_OVERLAY，所以走
+ *   "/boot/ubootEnv.txt 指定的 overlay" 这条路。
+ *
+ * 注意：本 overlay 只往根节点加节点，不引用 &xxx 标签，
+ * 所以它不依赖基准 dtb 里的 __symbols__ 符号表，兼容性最好。
+ */
+
+// /dts-v1/; 声明使用 DTS v1 语法，一份最终设备树有且只能有一个
+/dts-v1/;
+
+// /plugin/; 标记这是 overlay（插件），dtc 会把它编成 .dtbo 而不是完整 .dtb
+/plugin/;
+
+/ {
+	/*
+	 * fragment@0：overlay 的"补丁片段"。
+	 * 一个 overlay 可以有多个 fragment，每个 fragment 指定一个目标节点，
+	 * __overlay__ 里的内容会被合并进那个目标节点。
+	 * fragment@0 后面的 0 只是序号，不影响合并顺序。
+	 */
+	fragment@0 {
+		/*
+		 * target-path = "/"：目标是整棵设备树的根节点。
+		 * 另一种写法是 target = <&some_label>; 用标签定位，
+		 * 但那要求目标节点在基准 dtb 的 __symbols__ 里（本 overlay 不需要）。
+		 */
+		target-path = "/";
+
+		__overlay__ {
+			/*
+			 * led8: 节点标签 + 节点名。
+			 * 标签（冒号前）方便别的地方用 &led8 引用；这里用不到，
+			 * 但保留标签是设备树的好习惯。
+			 */
+			led8: led8 {
+				/*
+				 * compatible：最重要的属性。
+				 * 内核拿它和驱动的 of_match_table 逐项比较，
+				 * 匹配上才会调用 led8_probe()。
+				 * 格式约定是 "厂商前缀,设备名"，这里用 work 作为示例前缀。
+				 */
+				compatible = "work,led8";
+
+				/*
+				 * status = "okay" 表示启用；
+				 * 写 "disabled" 则内核不会为它创建 platform 设备。
+				 */
+				status = "okay";
+
+				/*
+				 * channels：自定义属性，驱动用
+				 * of_property_read_u32(dev->of_node, "channels", ...) 读取。
+				 * 不写时驱动默认 8；上限 16（见 include/led8_uapi.h）。
+				 */
+				channels = <8>;
+
+				/*
+				 * default-brightness：上电初始亮度，0~255。
+				 * 0 表示全部通道熄灭，255 表示全亮。
+				 * 驱动会把所有通道初始化成这个值。
+				 */
+				default-brightness = <0>;
+			};
+		};
+	};
+};
