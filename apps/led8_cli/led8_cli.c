@@ -316,6 +316,8 @@ static void cmd_demo(void)
 	printf("demo done, all channels off\n");
 }
 
+// pread / pwrite = read/write + lseek原子化版本，自带偏移参数，不会修改文件描述符内部的 f_pos（文件偏移指针）
+// 普通 read / write 会顺着操作、自动更新 f_pos
 int main(int argc, char **argv)
 {
 	const char *path = getenv("DEV_PATH") ? getenv("DEV_PATH") : DEV_PATH;
