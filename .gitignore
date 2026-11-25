@@ -1,0 +1,13 @@
+# 构建产物：最终产物 out/，中间目录 build/（构建结束会自动删除）
+/out/
+/build/
+
+# 编辑器
+.vscode/
+.idea/
+*.swp
+
+# clangd 生成的索引缓存（可重建，勿提交）
+/.cache/
+# 编译数据库含绝对路径（勿提交，可重新生成）
+/compile_commands.json
