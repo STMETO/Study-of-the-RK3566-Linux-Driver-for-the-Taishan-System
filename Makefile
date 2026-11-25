@@ -42,7 +42,7 @@ DTS_CPPFLAGS := -E -nostdinc -undef -D__DTS__ -x assembler-with-cpp \
 	-I$(KERNEL_DIR)/arch/arm64/boot/dts \
 	-I$(KERNEL_DIR)/arch/arm64/boot/dts/rockchip
 
-.PHONY: all dtb verify clean help
+.PHONY: all dtb compdb verify clean help
 
 all: $(KO) $(DTBO) $(CLI)
 	@rmdir "$(BUILD_DIR)" 2>/dev/null || true
@@ -98,6 +98,14 @@ $(CLI): $(APP_DIR)/led8_cli.c $(INCLUDE_DIR)/led8_uapi.h
 	cp "$$stage/led8_cli" "$@"
 	@echo "  CLI   $@"
 
+# --- clangd 编译数据库 ---------------------------------------------------------
+# 生成 compile_commands.json：VSCode + clangd 靠它拿到内核真实的编译参数，
+# 才能解析 <linux/...> 头文件、支持 Ctrl+点击跳转和补全。
+# 文件里是绝对路径，已被 .gitignore 忽略；换机器或换 SDK 路径后重跑一次。
+compdb:
+	@$(CURDIR)/scripts/gen_compile_commands.sh
+	@echo "  CDB   $(CURDIR)/compile_commands.json"
+
 # --- 验证 / 清理 --------------------------------------------------------------
 # 无需板子：把 out/led8.dtbo 用 fdtoverlay 合并进 SDK 编出来的基准 dtb，
 # 再反编译检查 led8 节点是否真的进去了。
@@ -115,6 +123,7 @@ help:
 	@echo "  all      build out/led8.ko, out/led8.dtbo, out/led8_cli (default)"
 	@echo "  dtb      build out/tspi-rk3566-led8.dtb (optional full board DTB)"
 	@echo "  verify   apply out/led8.dtbo to the SDK base DTB with fdtoverlay"
+	@echo "  compdb   generate compile_commands.json for clangd"
 	@echo "  clean    remove out/ and build/"
 	@echo
 	@echo "Variables: SDK, KERNEL_DIR, ARCH, CROSS_COMPILE, OUT, BUILD_DIR, BASE_DTB"

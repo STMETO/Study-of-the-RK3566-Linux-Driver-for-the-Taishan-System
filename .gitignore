@@ -9,5 +9,5 @@
 
 # clangd 生成的索引缓存（可重建，勿提交）
 /.cache/
-# 编译数据库含绝对路径（勿提交，可重新生成）
+# 编译数据库含绝对路径（勿提交，用 make compdb 重建）
 /compile_commands.json
