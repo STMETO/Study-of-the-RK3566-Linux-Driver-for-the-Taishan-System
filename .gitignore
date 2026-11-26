@@ -1,0 +1,24 @@
+# 构建产物
+/out/
+/build/
+
+# clangd 资源缓存
+.cache/
+
+# clangd 编译数据库：是"本机 + 当前 SDK 路径"的产物，
+# 换机器就得重跑 make compdb，所以不提交（用 make compdb 重建）
+compile_commands.json
+
+# 内核模块编译残留（正常情况下都落在 build/ 临时目录里，这里兜底）
+*.o
+*.ko
+*.mod
+*.mod.c
+*.cmd
+.tmp_versions/
+modules.order
+Module.symvers
+
+# 常见临时文件
+*~
+*.swp
