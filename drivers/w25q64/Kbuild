@@ -1,0 +1,5 @@
+# SPDX-License-Identifier: GPL-2.0
+#
+# 内核模块名：w25q64.ko
+# obj-m 表示"编译成可加载模块"，kbuild 会自动去找同目录下的 w25q64.c。
+obj-m := w25q64.o
