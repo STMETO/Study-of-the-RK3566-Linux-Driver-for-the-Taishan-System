@@ -1,0 +1,36 @@
+// SPDX-License-Identifier: GPL-2.0
+/*
+ * tspi-rk3566-at24c02.dts - 带 AT24C02 节点的完整板级设备树（备用方案）
+ *
+ * 平时用 overlay（at24c02-overlay.dts）就够了。这份整颗 dts 的用途是：
+ *   - 你想把节点"焊死"进 dtb，而不是靠 U-Boot 每次启动叠加
+ *   - 或者你的 U-Boot 没开 overlay 支持
+ *
+ * 用法：
+ *   make dtb
+ *   然后把 out/tspi-rk3566-at24c02.dtb 替换掉 boot.img 里的同名 dtb
+ *   （或按 SDK 的方式重新打包 resource.img / boot.img）
+ *
+ * 注意：这份文件是 #include 板级 dts，不是重新写一颗。
+ * 所以开头不能再写 /dts-v1/，否则 dtc 会报重复的版本声明。
+ */
+
+#include "tspi-rk3566-user-v10-linux.dts"
+
+/*
+ * 直接在被 include 进来的板级设备树上追加节点。
+ * 语法和 overlay 一样用 &i2c2，但这里是"同一个编译单元内的引用"，
+ * 解析不依赖 __symbols__，所以一定有效。
+ */
+&i2c2 {
+	status = "okay";
+	clock-frequency = <100000>;
+
+	at24c02: eeprom@50 {
+		compatible = "work,at24c02";
+		reg = <0x50>;
+		size = <256>;
+		pagesize = <8>;
+		status = "okay";
+	};
+};

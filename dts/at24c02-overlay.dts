@@ -1,0 +1,76 @@
+// SPDX-License-Identifier: GPL-2.0
+/*
+ * at24c02-overlay.dts - AT24C02 的 device tree overlay
+ *
+ * 编译产物 at24c02.dtbo 不改动 boot.img 里的 dtb，而是由 U-Boot 在启动时
+ * 把它"叠加"到基准 dtb 上，配合内核模块使用非常方便：
+ *   1. 板端 /boot/overlays/at24c02.dtbo
+ *   2. /boot/ubootEnv.txt 里加 overlays=at24c02.dtbo
+ *   3. 重启后内核的 i2c2 下面就会多出一个 eeprom@50 节点
+ *
+ * 叠加的原理：overlay 里的 `&i2c2 { ... }` 会被 dtc -@ 编译成
+ *   fragment@0 { target = <&i2c2>; __overlay__ { ... }; };
+ *   __fixups__ { i2c2 = "/fragment@0:target:0"; };
+ * 其中 &i2c2 这个"符号引用"要靠基准 dtb 的 __symbols__ 表才能解析，
+ * 而泰山派 SDK 编出来的 dtb 是带 __symbols__ 的，所以可以直接用 &i2c2。
+ * （如果基准 dtb 没有 __symbols__，就只能用 target-path = "/soc/i2c@fe5b0000"，
+ *   这也是 led8 的 overlay 用 target-path 的原因——它挂的是根节点。）
+ */
+
+/dts-v1/;
+/plugin/;
+
+/*
+ * &i2c2 在 dtsi 里是 i2c@fe5b0000，泰山派把它接在 GPIO0_B5(SCL)/GPIO0_B6(SDA)。
+ * 注意板级 dts 里只写了 status = "okay"，引脚复用用的是 dtsi 里默认的
+ * i2c2m0_xfer，正好就是这两根脚，所以 overlay 里不用再写 pinctrl。
+ */
+&i2c2 {
+	/* 有些板级 dts 可能把 i2c2 关掉了，这里显式打开，保证节点可用 */
+	status = "okay";
+
+	/*
+	 * EEPROM 是 i2c 总线上的"子设备"，reg 属性就是它的从机地址，
+	 * 所以这里必须告诉 dtc：父节点用 1 个 cell 表示地址、0 个 cell 表示大小。
+	 * i2c2 在 dtsi 里本来就有这两个属性，这里重写一遍是为了让这份
+	 * overlay 单独看也自洽，并且避免 dtc 的 reg_format 警告。
+	 */
+	#address-cells = <1>;
+	#size-cells = <0>;
+
+	/*
+	 * 时钟频率。AT24C02 支持 400kHz，但第一次调试建议先用 100kHz，
+	 * 线长、上拉电阻不合适的时候 400kHz 很容易出错。
+	 * 想提速就把这行改成 <400000>。
+	 */
+	clock-frequency = <100000>;
+
+	/*
+	 * 节点名 eeprom@50 里的 @50 必须和 reg 一致，这是设备树规范。
+	 * 标签 at24c02 方便其它 overlay 用 &at24c02 引用它。
+	 *
+	 * compatible 必须和驱动 of_match_table 里的 "work,at24c02" 完全一致，
+	 * 内核就是靠这个字符串把节点和驱动对上号的。
+	 */
+	at24c02: eeprom@50 {
+		compatible = "work,at24c02";
+
+		/* I2C 从机地址：A0/A1/A2 全接地时是 0x50 */
+		reg = <0x50>;
+
+		/*
+		 * 下面两个属性是"本驱动自定义"的，内核通用 i2c 框架不认识，
+		 * 由 at24c02_probe() 里的 of_property_read_u32() 自己解析。
+		 *
+		 * size     : 芯片容量（字节）。AT24C02 = 256
+		 * pagesize : 页大小（字节）。AT24C02 = 8
+		 * 换 24C01（128 字节，页 8）时把 size 改成 128 即可，
+		 * 驱动不用重编。
+		 */
+		size = <256>;
+		pagesize = <8>;
+
+		/* 明确节点可用（overlay 里节点默认是 okay，写出来更直观） */
+		status = "okay";
+	};
+};
