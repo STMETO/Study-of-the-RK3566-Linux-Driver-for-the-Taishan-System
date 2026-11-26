@@ -1,0 +1,35 @@
+// SPDX-License-Identifier: GPL-2.0
+/*
+ * tspi-rk3566-w25q64.dts - 整颗板级设备树（备用方案）
+ *
+ * 和 w25q64-overlay.dts 的区别：
+ *   overlay：运行期由 U-Boot 叠加到基准 dtb 上，改完不用重烧 boot.img
+ *   本文件 ：直接在基准板级 dts 的基础上加节点，编出一颗完整 dtb，
+ *            适合"内核里没开 overlay 支持"或者想一次性固化配置的场景
+ *
+ * 编译：make dtb  ->  out/tspi-rk3566-w25q64.dtb
+ * 使用：替换 boot.img 里的 dtb（或者用板子的分区表直接刷 dtb 分区）
+ *
+ * 注意：这里不能再写 /dts-v1/、也不能写 /plugin/，
+ * 因为被 #include 的基准 dts 里已经有 /dts-v1/ 了，重复写会报错。
+ * include 路径由 Makefile 里的 DTS_CPPFLAGS 提供。
+ */
+
+#include "tspi-rk3566-user-v10-linux.dts"
+
+&spi3 {
+	#address-cells = <1>;
+	#size-cells = <0>;
+
+	/* 关掉板级 dts 自带的 spidev 测试节点，腾出 CS0 */
+	spi_test@0 {
+		status = "disabled";
+	};
+
+	flash@0 {
+		compatible = "work,w25q64";
+		reg = <0>;
+		spi-max-frequency = <10000000>;
+		status = "okay";
+	};
+};

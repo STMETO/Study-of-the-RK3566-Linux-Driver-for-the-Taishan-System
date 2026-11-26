@@ -1,0 +1,54 @@
+// SPDX-License-Identifier: GPL-2.0
+/*
+ * w25q64-overlay.dts - 给 spi3 挂一颗 W25Q64（SPI NOR Flash）
+ *
+ * 用法（板端）：
+ *   1. 编译出 out/w25q64.dtbo
+ *   2. 放进 /boot/overlays/，在 /boot/ubootEnv.txt 的 overlays= 里加上它
+ *   3. 重启，U-Boot 会用 fdtoverlay 把它叠加到基准 dtb 上
+ *
+ * 为什么用 &spi3 而不是 target-path = "/"？
+ *   我们要往"已有的" spi3 控制器下面加子节点，必须拿到 spi3 节点的引用。
+ *   基准 dtb 是用 dtc -@ 编的，里面带 __symbols__ 表（spi3 = /spi@fe640000），
+ *   所以 overlay 里的 &spi3 能被 U-Boot/fdtoverlay 正确解析。
+ *   编 dtbo 时必须带 -@ 参数，否则不会生成 __fixups__，叠加时会报错。
+ *
+ * 为什么要把 spi_test@0 设成 disabled？
+ *   板级 dts 里 spi3 下面已经挂了一个
+ *       spi_test@0 { compatible = "rockchip,spidev"; reg = <0>; };
+ *   它会被 spidev 驱动接管，开机就有 /dev/spidev3.0，同样占着 CS0。
+ *   一个 CS 片选上只能有一个设备节点生效，所以这里把它关掉，
+ *   把 CS0 让给 flash@0。（想先用 spidev 验证接线的话，临时不加这段即可。）
+ */
+
+/dts-v1/;
+/plugin/;
+
+&spi3 {
+	/*
+	 * 子节点的地址/长度单位。spi 总线是"1 个片选、0 个长度"，
+	 * 写上这两行才能让 reg = <0> 被 dtc 正确理解，
+	 * 否则 dtc 会用默认的 2/1 去算，报 reg_format 警告。
+	 */
+	#address-cells = <1>;
+	#size-cells = <0>;
+
+	/* 让出 CS0：关掉板级 dts 里那个测速用的 spidev 节点 */
+	spi_test@0 {
+		status = "disabled";
+	};
+
+	/*
+	 * 我们的 flash 设备。
+	 *   compatible        ：必须和驱动 of_match_table 里的一致
+	 *   reg = <0>         ：用 CS0
+	 *   spi-max-frequency ：先给 10MHz，跑稳了可以提到 50MHz
+	 *                       （spi3 控制器上限 50MHz，板级 dts 注释里写的是 48MHz）
+	 */
+	flash@0 {
+		compatible = "work,w25q64";
+		reg = <0>;
+		spi-max-frequency = <10000000>;
+		status = "okay";
+	};
+};
