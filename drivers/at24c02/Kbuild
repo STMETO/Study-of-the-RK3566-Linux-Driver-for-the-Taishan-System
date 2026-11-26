@@ -1,0 +1,11 @@
+# SPDX-License-Identifier: GPL-2.0
+# at24c02 内核模块的 Kbuild 片段。
+#
+# 它故意不是一份独立 Makefile：顶层 Makefile 会把本文件、at24c02.c 和
+# include/at24c02_uapi.h 一起拷进临时 staging 目录，在那边执行 Kbuild，
+# 再把生成的 at24c02.ko 搬到 out/。
+#
+# obj-m := at24c02.o 的意思是：用同目录下的 at24c02.c 编出 at24c02.ko。
+# 注意 i2c 驱动不需要额外 Kconfig/Makefile 改动，因为它走的是标准
+# i2c_driver 注册流程，内核里没有对应的 mach 依赖。
+obj-m := at24c02.o
