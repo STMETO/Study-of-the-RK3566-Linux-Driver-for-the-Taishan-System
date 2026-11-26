@@ -22,8 +22,24 @@
  * 语法和 overlay 一样用 &i2c2，但这里是"同一个编译单元内的引用"，
  * 解析不依赖 __symbols__，所以一定有效。
  */
+// ../../sdk/kernel-6.1/arch/arm64/boot/dts/rockchip/rk356x.dtsi
+/*
+i2c2: i2c@fe5b0000 {
+	compatible = "rockchip,rk3568-i2c", "rockchip,rk3399-i2c";
+	reg = <0x0 0xfe5b0000 0x0 0x1000>;	// <高32位 基地址 高32位 长度> 物理地址 0xfe5b0000，映射长度 0x1000（4KB）
+	interrupts = <GIC_SPI 48 IRQ_TYPE_LEVEL_HIGH>;	//中断信息：GIC 通用中断控制器，SPI（共享中断），中断号 48，电平高触发
+	clocks = <&cru CLK_I2C2>, <&cru PCLK_I2C2>;	// `cru`：时钟复位单元（Clock Reset Unit），RK SOC的时钟管理器 // `pclk`：外设总线APB时钟，给寄存器访问用
+	clock-names = "i2c", "pclk";
+	pinctrl-0 = <&i2c2m0_xfer>;	// `i2c2m0_xfer` 是另外定义的pinctrl子节点，配置哪两个GPIO作为I2C2的SDA/SCL
+	pinctrl-names = "default";	// "default"`：上电默认就使用这套引脚配置
+	#address-cells = <1>;	// #address-cells = <1>：它下面每一个子设备（I2C从机）的 reg属性，用1个cell（32bit）表示从机地址
+	#size-cells = <0>;	// #size-cells = <0>：I2C从设备不需要描述“大小”，没有长度字段
+	status = "disabled";
+};
+*/
 &i2c2 {
 	status = "okay";
+	// clock-frequency 是 I2C 适配器（I2C 主机控制器）节点的标准属性
 	clock-frequency = <100000>;
 
 	at24c02: eeprom@50 {
