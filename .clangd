@@ -1,0 +1,21 @@
+# clangd 的"减法"配置。
+#
+# compile_commands.json 是从内核真实编译命令里抓出来的，里面带着一堆
+# clang 不认识或会误报的参数（GCC 专有选项、内核的 mabi、stack-protector
+# 保护写法等）。这些参数在 gcc 下合法，但在 clang 下会报 unknown argument
+# 或者生成错误的诊断，进而让 clangd 解析失败、跳转失效。
+#
+# 这里统一用 Remove 把它们从编译命令里删掉，剩下的干净参数足以让
+# clangd 正确解析 <linux/...> 头文件、宏和函数原型。
+CompileFlags:
+  Remove:
+    - -fno-allow-store-data-races
+    - -fconserve-stack
+    - -femit-struct-debug-baseonly
+    - -fno-var-tracking
+    - -mstack-protector-guard*
+    - -mabi=lp64
+    - -Wa,*
+    - -Wp,-MMD,*
+    - -Werror
+    - -Werror=*
