@@ -1,0 +1,11 @@
+# SPDX-License-Identifier: GPL-2.0
+#
+# 假 SPI 控制器模块：fake-spi-flash.ko
+# 它和 w25q64.ko 是两个完全独立的模块，只通过 SPI 核心的
+# "控制器 + spi_device" 机制连接，互不包含、互不依赖。
+#
+# 模块名用连字符（fake-spi-flash.ko），源码文件用下划线
+# （fake_spi_flash.c），所以要显式告诉 kbuild 源文件是哪个：
+# 否则它默认去找 fake-spi-flash.c。
+obj-m := fake-spi-flash.o
+fake-spi-flash-y := fake_spi_flash.o
