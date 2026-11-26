@@ -160,6 +160,8 @@ static int at24c02_read_bytes(struct at24c02_dev *priv, u32 addr,
 	u32 done = 0;
 
 	while (done < len) {
+		// i2c_smbus_read_i2c_block_data这个接口最多一次只能读 32 字节，这是 SMBus 协议规定的硬上限，不是 EEPROM 的限制。
+		// 所以循环里按 32 字节切分，纯粹是 API 的约束，不是 EEPROM 硬件限制
 		u32 chunk = min_t(u32, len - done, AT24C02_BLOCK_MAX);
 		int ret;
 
@@ -186,7 +188,6 @@ static int at24c02_read_bytes(struct at24c02_dev *priv, u32 addr,
 			 * 但几乎所有 I2C 适配器都支持 BYTE_DATA。
 			 */
 			u32 i;
-
 			for (i = 0; i < chunk; i++) {
 				ret = i2c_smbus_read_byte_data(client,
 							       addr + done + i);
@@ -218,7 +219,6 @@ static int at24c02_write_page(struct at24c02_dev *priv, u32 addr,
 		ret = i2c_smbus_write_i2c_block_data(client, addr, len, buf);
 	} else {
 		u32 i;
-
 		ret = 0;
 		for (i = 0; i < len; i++) {
 			ret = i2c_smbus_write_byte_data(client, addr + i,
@@ -234,6 +234,8 @@ static int at24c02_write_page(struct at24c02_dev *priv, u32 addr,
 	}
 
 	/* 等芯片内部擦写完成 */
+	// 当你 I2C 总线发完数据、总线 STOP 之后，EEPROM 芯片还在内部把数据烧进浮栅存储单元，
+	// 这个烧写是芯片内部硬件操作，不受 I2C 总线控制
 	msleep(AT24C02_TWR_MS);
 
 	return 0;
@@ -251,6 +253,8 @@ static int at24c02_write_range(struct at24c02_dev *priv, u32 addr,
 {
 	while (len > 0) {
 		/* 当前地址到本页末尾还有多少空间 */
+		// 算出当前addr在它所在硬件页里，还剩下多少字节空位，不能跨页写
+		// &是取模（求余数）的快速位运算写法，前提：page_size是 2 的幂, addr % 8
 		u32 room = priv->page_size - (addr & (priv->page_size - 1));
 		u32 chunk = min_t(u32, len, room);
 		int ret;
@@ -274,12 +278,14 @@ static int at24c02_write_range(struct at24c02_dev *priv, u32 addr,
  */
 static int at24c02_erase(struct at24c02_dev *priv)
 {
-	u8 page[AT24C02_MAX_PAGE];
-	u32 addr;
+	u8 page[AT24C02_MAX_PAGE];	// 页缓冲区，大小=一页最大字节数，这里是8字节
+	u32 addr;					// EEPROM内的偏移地址（0~255）
 
 	memset(page, 0xFF, sizeof(page));
 
+	// addr 是本次要写的起始地址，每次步进一页（+8）
 	for (addr = 0; addr < priv->size; addr += priv->page_size) {
+		// 到最后一页边界（比如容量不是页对齐时），chunk = 剩余字节，防止越界
 		u32 chunk = min_t(u32, priv->page_size, priv->size - addr);
 		int ret;
 
@@ -306,6 +312,7 @@ static int at24c02_open(struct inode *inode, struct file *filp)
 {
 	struct at24c02_dev *priv;
 
+	// container_of(ptr, type, member)
 	priv = container_of(inode->i_cdev, struct at24c02_dev, cdev);
 	filp->private_data = priv;
 
@@ -453,6 +460,7 @@ static loff_t at24c02_llseek(struct file *filp, loff_t off, int whence)
 	if (newpos > (loff_t)priv->size)
 		newpos = priv->size;
 
+	// filp->f_pos是文件偏移；read/write 的 ppos参数，是它的指针
 	filp->f_pos = newpos;
 
 	return newpos;
@@ -471,6 +479,7 @@ static long at24c02_unlocked_ioctl(struct file *filp, unsigned int cmd,
 	struct at24c02_info info;
 	int ret;
 
+	// IOC_TYPE(cmd)：内核提供的宏，从 ioctl 命令编码里提取出魔数字段
 	if (_IOC_TYPE(cmd) != AT24C02_IOC_MAGIC)
 		return -ENOTTY;
 
@@ -541,6 +550,8 @@ static int at24c02_probe(struct i2c_client *client,
 	struct at24c02_dev *priv;
 	int ret;
 
+	// riv->client->addr 就是 I2C 从机地址（7bit 地址，如 0x50）；
+	// 它不是你在 probe 里手动赋值的，是内核在创建 i2c_client 的时候就填好的。
 	dev_info(dev, "probing %s at 0x%02x on %s\n",
 		 id ? id->name : DEVICE_NAME, client->addr,
 		 client->adapter->name);
@@ -604,6 +615,10 @@ static int at24c02_probe(struct i2c_client *client,
 	 * 驱动依然能加载、能建出 /dev/at24c02，方便你先把字符设备那套流程
 	 * 跑通。等真接上芯片，这里就会变成成功。
 	 */
+	// i2c_check_functionality 是查询当前 I2C 适配器（SoC 的 I2C 控制器）到底支持哪些 SMBus/I2C 能力；
+	// 这里就是查：这个适配器支不支持 `I2C_FUNC_SMBUS_I2C_BLOCK`（SMBus I2C 块传输）
+	// 如果支持 → use_block=true，驱动调用 i2c_smbus_read_i2c_block_data / write_i2c_block_data，一次 I2C 事务传多字节
+	// 如果不支持 → use_block=false，退化成循环调用 i2c_smbus_read_byte_data / write_byte_data，一次只传 1 字节
 	ret = i2c_smbus_read_byte_data(client, 0);
 	if (ret < 0)
 		dev_warn(dev, "no ACK from 0x%02x (%d), node will still be created\n",
@@ -780,7 +795,7 @@ static void __exit at24c02_exit(void)
 module_init(at24c02_init);
 module_exit(at24c02_exit);
 
-MODULE_AUTHOR("fxy <3332823540@qq.com>");
+MODULE_AUTHOR("fxy");
 MODULE_DESCRIPTION("AT24C02 I2C EEPROM char device driver (platform-style teaching sample)");
 MODULE_LICENSE("GPL");
 MODULE_ALIAS("i2c:at24c02");
