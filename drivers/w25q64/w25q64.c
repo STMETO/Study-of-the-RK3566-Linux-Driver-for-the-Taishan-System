@@ -49,6 +49,9 @@
  *   等芯片内部操作真正完成，否则下一条命令会被忽略。
  */
 
+// 重点：路线 A（标准产品路线，推荐）：扔掉你现在这个裸 cdev 驱动，走内核标准 MTD+UBI 栈
+// 改造为异步spi
+
 #include <linux/module.h>
 #include <linux/init.h>
 #include <linux/kernel.h>
@@ -72,8 +75,13 @@
 #define W25Q64_DEFAULT_SIZE		(8u * 1024u * 1024u)
 
 /* W25Q 系列的固定几何参数 */
-#define W25Q64_PAGE_SIZE		256u
-#define W25Q64_SECTOR_SIZE		4096u
+/*
+	1 Sector = 4096 Byte
+	1 Page = 256 Byte
+	1 Sector = 16 Pages
+*/
+#define W25Q64_PAGE_SIZE		256u	// 一次页编程命令最多连续写入 256 字节
+#define W25Q64_SECTOR_SIZE		4096u	// 擦除操作最小粒度 4KB
 
 /* 各种操作的超时时间（数据手册的最大值再留一点余量） */
 #define W25Q64_PROGRAM_TIMEOUT_MS	1000u		/* 页编程典型 0.7ms，最大 3ms */
@@ -98,15 +106,15 @@
  * 和 at24c02 对比：client 换成了 spi，其余（cdev/dev/devt/lock）完全一样。
  */
 struct w25q64_dev {
-	struct spi_device *spi;		/* 由 SPI 核心创建，代表 CS0 上的这颗芯片 */
+	struct spi_device *spi;	/* 由 SPI 核心创建，代表 CS0 上的这颗芯片 */
 	struct cdev cdev;		/* 字符设备本体 */
 	struct device *dev;		/* /sys/class/w25q64/w25q64 */
-	dev_t devt;			/* 设备号 */
+	dev_t devt;				/* 设备号 */
 	struct mutex lock;		/* 保护 size/寄存器访问，串行化 SPI 事务 */
 	u32 jedec_id;			/* 例如 W25Q64 是 0xEF4017 */
-	u32 size;			/* 容量，字节 */
-	u32 sector_size;		/* 固定 4096 */
-	u32 page_size;			/* 固定 256 */
+	u32 size;				/* 容量，字节 */
+	u32 sector_size;		/* 固定 4096字节 = 4KB */
+	u32 page_size;			/* 固定 256字节 */
 };
 
 /* class 在整个模块生命周期内只有一份，module_init 里创建 */
@@ -127,6 +135,7 @@ struct w25q64_capacity {
 	const char *name;
 };
 
+// W25Q 系列 Flash 的 ID → 容量、型号的匹配表
 static const struct w25q64_capacity w25q64_capacities[] = {
 	{ 0xEF4013, 512u * 1024u,	"W25Q40"  },
 	{ 0xEF4014, 1024u * 1024u,	"W25Q80"  },
@@ -171,6 +180,7 @@ static int w25q64_sync(struct w25q64_dev *priv, const void *tx, void *rx, size_t
 	struct spi_message msg;
 	int ret;
 
+	// 如果上层有发送数据，分配堆ktx，把tx数据拷贝进来
 	if (tx) {
 		ktx = kmalloc(len, GFP_KERNEL);
 		if (!ktx)
@@ -179,6 +189,7 @@ static int w25q64_sync(struct w25q64_dev *priv, const void *tx, void *rx, size_t
 		xfer.tx_buf = ktx;
 	}
 
+	// 如果上层需要接收数据，分配堆krx
 	if (rx) {
 		krx = kmalloc(len, GFP_KERNEL);
 		if (!krx) {
@@ -188,9 +199,11 @@ static int w25q64_sync(struct w25q64_dev *priv, const void *tx, void *rx, size_t
 		xfer.rx_buf = krx;
 	}
 
+	// SPI框架标准流程：初始化message，挂transfer
 	spi_message_init(&msg);
 	spi_message_add_tail(&xfer, &msg);
 
+	// 阻塞同步SPI传输，底层控制器如果支持DMA就会走DMA
 	ret = spi_sync(priv->spi, &msg);
 
 	/* 只有成功时 rx 缓冲区的内容才有意义 */
@@ -214,10 +227,10 @@ static int w25q64_write_enable(struct w25q64_dev *priv)
 }
 
 /*
- * 读状态寄存器 1。
- * 发送 1 字节命令，第 2 个字节返回状态；所以 tx/rx 都要 2 字节长，
- * 有效数据在 rx[1]。
- */
+* 读状态寄存器 1。
+* 发送 1 字节命令，第 2 个字节返回状态；所以 tx/rx 都要 2 字节长，
+* 有效数据在 rx[1]。
+*/
 static int w25q64_read_status(struct w25q64_dev *priv, u8 *status)
 {
 	u8 tx[2] = { W25Q_CMD_READ_STATUS1, 0 };
@@ -232,68 +245,109 @@ static int w25q64_read_status(struct w25q64_dev *priv, u8 *status)
 	return 0;
 }
 
-/*
- * 等芯片空闲：反复读状态寄存器，直到 BUSY 位清零。
- * 编程要等几毫秒，4KB 扇区擦除要等几十~几百毫秒，整片擦除几十秒，
- * 所以循环里必须让出 CPU（msleep），不能忙等。
- */
+/**
+* @brief 轮询等待Flash芯片空闲，直到BUSY位为0或者超时
+* @param priv        设备私有结构体
+* @param timeout_ms  最大等待超时时间，单位ms
+* @return 成功返回0；SPI读状态失败返回负错误码；超时返回-ETIMEDOUT
+*
+* 说明：
+* 页编程耗时几ms，4K扇区擦除几十~几百ms，整片擦除可达几十秒；
+* 不能while(1)空转忙等（会占死CPU），每次查询后msleep让出CPU。
+*/
 static int w25q64_wait_ready(struct w25q64_dev *priv, unsigned int timeout_ms)
 {
+	/*
+	* jiffies：内核全局滴答计数器，系统启动后不断递增
+	* msecs_to_jiffies：把毫秒转换成jiffies滴答数
+	* deadline = 当前滴答 + 超时滴答，作为超时截止点
+	*/
 	unsigned long deadline = jiffies + msecs_to_jiffies(timeout_ms);
 	int ret;
 
+	// 无限循环，直到就绪 / 出错 / 超时
 	for (;;) {
 		u8 status;
 
+		// SPI读状态寄存器（命令0x05），拿到SR1状态字节
 		ret = w25q64_read_status(priv, &status);
 		if (ret)
-			return ret;
+			return ret;  // 读状态本身SPI失败，直接返回错误
 
+		// BUSY位(BIT0)为0：芯片空闲，操作完成，正常退出
 		if (!(status & W25Q_STATUS_BUSY))
 			return 0;
 
+		/*
+		* time_after(a,b)：内核安全宏，判断 a > b
+		* 专门处理jiffies无符号数溢出回绕的坑，不要直接写 jiffies > deadline
+		* 如果当前滴答已经超过截止时间：超时报错
+		*/
 		if (time_after(jiffies, deadline)) {
 			dev_err(&priv->spi->dev,
 				"等待芯片空闲超时（%u ms）\n", timeout_ms);
 			return -ETIMEDOUT;
 		}
 
+		/*
+		* 休眠1ms，主动让出CPU，调度器切走进程
+		* 避免CPU空转占用100%；Flash操作很慢，1ms查询间隔足够
+		*/
 		msleep(1);
 	}
 }
+ 
 
-/*
- * 读 JEDEC ID：0x9F + 3 个无意义字节，芯片在 MISO 上回 3 字节 ID。
- * 所以一共 4 个时钟字节，ID 在 rx[1..3]。
- *
- * 返回值：
- *   0      读到合法 ID，已写进 priv->jedec_id
- *   -ENODEV 明显没有芯片（MISO 全是 0xFF 或 0x00）
- */
+/**
+* @brief 读取W25Q系列Flash的JEDEC ID，用于识别芯片型号
+* @param priv  设备私有结构体指针，包含spi_device、锁、容量等信息
+* @return 成功返回0；失败返回负错误码
+*
+* JEDEC ID 读取命令：0x9F，该命令流程：
+* 主机发送 0x9F 命令字节，之后连续读出3字节ID：
+*  rx[1]：厂商ID（Winbond华邦固定为 0xEF）
+*  rx[2]：内存类型ID
+*  rx[3]：容量ID
+*  三者拼接成24bit的JEDEC ID，用于查表匹配Flash型号
+*/
 static int w25q64_read_jedec(struct w25q64_dev *priv)
 {
+	/* tx[0] = 0x9F(JEDEC命令)，后面3个填充字节只是占位，用于同步SPI传输 */
 	u8 tx[4] = { W25Q_CMD_JEDEC_ID, 0, 0, 0 };
+	/* rx数组接收SPI返回数据，rx[0]对应发送命令阶段的dummy，有效数据从rx[1]开始 */
 	u8 rx[4] = { 0 };
 	int ret;
 
+	/* 发起一次同步SPI传输：发送tx，同时接收rx，一共4字节 */
 	ret = w25q64_sync(priv, tx, rx, sizeof(tx));
 	if (ret)
-		return ret;
+		return ret;  // SPI传输出错，直接向上返回错误
 
+	/* 合法性判断：厂商ID为0x00或者0xFF，代表没有芯片/总线浮空/芯片未应答 */
 	if (rx[1] == 0x00 || rx[1] == 0xFF)
 		return -ENODEV;
 
+	/* 拼接24bit JEDEC ID：
+	* rx[1] 厂商ID 放在高8bit(bit23~bit16)
+	* rx[2] 内存类型 放在中间8bit(bit15~bit8)
+	* rx[3] 容量ID 放在低8bit(bit7~bit0)
+	* 转u32避免移位溢出，存入私有结构体，给probe查表使用
+
+	* 厂商 ID：0xEF → Winbond 华邦
+	* 内存类型（memory type，就是你代码里的 rx [2]）：用来区分**Flash 子系列、总线类型、架构大类
+		你表里这批 W25Qxx，全部是 `0x40`，代表：**W25Q Q 系列标准 SPI NOR Flash**（支持单 / 双 / 四线 SPI）
+	*/
 	priv->jedec_id = ((u32)rx[1] << 16) | ((u32)rx[2] << 8) | rx[3];
 	return 0;
 }
 
 /*
- * 读任意长度数据。
- * 这是一条有两个 transfer 的 message：
- *   transfer[0]：tx = 0x03 + 3 字节地址（4 字节）
- *   transfer[1]：rx = 用户要的数据（len 字节）
- * CS 在两个 transfer 之间保持低电平，这正是读 flash 的时序要求。
- */
+* 读任意长度数据。
+* 这是一条有两个 transfer 的 message：
+*   transfer[0]：tx = 0x03 + 3 字节地址（4 字节）
+*   transfer[1]：rx = 用户要的数据（len 字节）
+* CS 在两个 transfer 之间保持低电平，这正是读 flash 的时序要求。
+*/
 static int w25q64_read_data(struct w25q64_dev *priv, u32 addr, void *buf, size_t len)
 {
 	struct spi_transfer xfer[2] = { };
@@ -328,58 +382,97 @@ static int w25q64_read_data(struct w25q64_dev *priv, u32 addr, void *buf, size_t
 }
 
 /*
- * 页编程：一次最多写一页（256 字节），且不能跨页。
- * 命令 + 地址 + 数据都放在同一个 transfer 里，一次性发出去。
- * 时序：WREN -> PAGE PROGRAM -> 等 BUSY 清零。
- */
-static int w25q64_page_program(struct w25q64_dev *priv, u32 addr,
-			       const void *buf, size_t len)
+* w25q64_page_program - W25Q 页编程（PAGE PROGRAM 0x02）
+* @priv:      设备私有结构体指针
+* @addr:      Flash 起始编程地址（24bit有效地址）
+* @buf:       内核态待写入数据缓冲区
+* @len:       本次写入字节长度
+* 返回值：成功返回0；失败返回负的内核错误码
+*
+* 硬件约束（重点）：
+* 1. 单次页编程命令最多写 256 字节（一页），不能跨页；
+* 2. 执行前必须先发 WREN(0x06) 写使能，否则页编程命令会被芯片忽略；
+* 3. 发送完页编程SPI报文之后，芯片内部开始烧写，需要轮询 BUSY 位等待完成；
+* 4. 硬件特性：只能把bit从1变成0；想要写入新数据，必须提前擦除扇区（擦除后bit全1）；
+* 5. 整条报文（命令+3字节地址+数据）放在同一个spi_message下发，CS全程保持低。
+*/
+ static int w25q64_page_program(struct w25q64_dev *priv, u32 addr,
+	const void *buf, size_t len)
 {
 	u8 *tx;
 	int ret;
 
+	/* 合法性校验：长度不能为0，也不能超过一页最大256字节 */
 	if (!len || len > priv->page_size)
 		return -EINVAL;
 
-	/* 命令 1 + 地址 3 + 数据 len，kmalloc 保证 DMA 安全 */
+	/*
+	* 分配发送缓冲区：
+	* 总长度 = 1字节命令 + 3字节地址 + len字节数据 = 4 + len
+	* kmalloc 分配内核堆内存，保证DMA可以安全映射；
+	* 栈内存不能直接给DMA SPI控制器使用，会告警/报错。
+	*/
 	tx = kmalloc(4 + len, GFP_KERNEL);
 	if (!tx)
 		return -ENOMEM;
 
-	tx[0] = W25Q_CMD_PAGE_PROGRAM;
-	w25q64_encode_addr(&tx[1], addr);
-	memcpy(&tx[4], buf, len);
+	tx[0] = W25Q_CMD_PAGE_PROGRAM;       // 0x02 页编程命令码
+	w25q64_encode_addr(&tx[1], addr);     // 把24bit地址编码成大端，填入tx[1],tx[2],tx[3]
+	memcpy(&tx[4], buf, len);             // 把待写数据拷贝到命令包后面
 
-	ret = w25q64_write_enable(priv);
+	ret = w25q64_write_enable(priv);      // 第一步：发送WREN(0x06)，打开写使能锁（WEL位置1）
 	if (!ret)
+	{
+		// 第二步：发送整包页编程报文，只发不收，rx传NULL
 		ret = w25q64_sync(priv, tx, NULL, 4 + len);
+	}
 
+	// SPI发送已经完成，tx缓冲区可以释放
 	kfree(tx);
 
+	// 如果前面WREN或者SPI发送出错，直接返回错误
 	if (ret)
 		return ret;
 
+	// 第三步：等待芯片内部编程完成，轮询状态寄存器BUSY位，带超时
 	return w25q64_wait_ready(priv, W25Q64_PROGRAM_TIMEOUT_MS);
 }
 
-/* 扇区擦除：地址会被对齐到 4KB 边界（调用者负责检查范围） */
+
+/**
+* @brief 扇区擦除，执行 4KB 扇区擦除命令 0x20
+* @param priv  设备私有结构体
+* @param addr  待擦除的Flash地址，调用方（ioctl分支）已经提前对齐到4K扇区边界、做越界检查
+* @return 成功返回0；SPI传输失败 / 等待超时 返回负错误码
+*/
 static int w25q64_sector_erase(struct w25q64_dev *priv, u32 addr)
 {
-	u8 tx[4];
+	u8 tx[4];   // SPI发送缓冲区：1字节命令 + 3字节24bit地址，一共4字节
 	int ret;
 
+	// tx[0] 填充扇区擦除命令码：0x20
 	tx[0] = W25Q_CMD_SECTOR_ERASE;
+	// 将32位地址编码成Flash要求的24bit大端地址，写入tx[1],tx[2],tx[3]
+	// w25q64_encode_addr：把addr的bit23~bit0，按高字节先发的顺序填入tx+1起始位置
+	// W25Q SPI 协议规定：地址必须先发高字节，后发低字节（协议层面的大端）
+	// CPU 是小端架构，所以把一个 u32 存到内存里的时候，是小端布局
 	w25q64_encode_addr(&tx[1], addr);
 
+	// 第一步：发 0x06 写使能命令。Flash擦除/编程前必须打开WEL锁存
 	ret = w25q64_write_enable(priv);
+	// 如果写使能成功，继续发送扇区擦除命令帧
 	if (!ret)
 		ret = w25q64_sync(priv, tx, NULL, sizeof(tx));
 
+	// 写使能失败 或者 擦除命令SPI传输失败，直接返回错误
 	if (ret)
 		return ret;
 
+	// 发送擦除命令之后，硬件开始擦除动作（慢操作，几十ms）
+	// 轮询状态寄存器 BUSY位，直到BUSY=0，或者超时
 	return w25q64_wait_ready(priv, W25Q64_ERASE_TIMEOUT_MS);
 }
+ 
 
 /* 整片擦除：8MB 芯片大约 20~40 秒，调用期间进程会一直阻塞 */
 static int w25q64_chip_erase(struct w25q64_dev *priv)
@@ -429,100 +522,162 @@ static int w25q64_release(struct inode *inode, struct file *file)
  * read(fd, buf, n)：
  *   *ppos 就是 flash 里的字节地址。读到容量末尾返回 0（表示 EOF），
  *   和普通文件语义一致，用户态可以用 while 循环读完整片。
+ *
+ * file_operations 的 read 回调：内核在用户调用 read() 时进入这个函数
+ * @file：打开的文件句柄，里面存 private_data 指向我们的设备私有结构体
+ * @ubuf：用户态缓冲区地址（__user 标记，不能直接内核侧访问）
+ * @count：用户想要读取的字节数
+ * @ppos：文件偏移指针，【入参】当前读取起始地址；【出参】读完后更新偏移
+ * 返回值：成功返回读到的字节数；0=EOF；负数=错误码
+ *
+ *	W25Q64 的读指令（0x03 普通读 / 0x0B 高速读）本身就是任意 24bit 地址直接读
  */
 static ssize_t w25q64_read(struct file *file, char __user *ubuf,
-			   size_t count, loff_t *ppos)
+	size_t count, loff_t *ppos)
 {
+	// 取出我们在 open 时挂载进去的私有设备结构体
 	struct w25q64_dev *priv = file->private_data;
-	size_t n;
-	void *buf;
+	size_t n;          // 本次实际要读的字节数（做边界截断）
+	void *buf;         // 内核临时缓冲区，用来存放从flash读出的数据
 	int ret;
 
+	// 校验偏移：flash地址不能为负数
 	if (*ppos < 0)
 		return -EINVAL;
 
+	// 偏移已经超过flash总容量 → EOF，返回0，和普通文件read语义对齐
 	if (*ppos >= priv->size)
 		return 0;
 
+	/*
+	* 计算本次真正读取长度：
+	* 取【用户想要读count字节】和【从当前偏移到flash末尾剩余字节】两者更小值
+	* 防止越界读到flash外面
+	*/
 	n = min_t(size_t, count, priv->size - (u32)*ppos);
 	if (!n)
 		return 0;
 
+	// 在内核堆分配一块临时缓冲区，SPI底层DMA传输需要内核合法地址，不能直接用用户态ubuf
 	buf = kmalloc(n, GFP_KERNEL);
 	if (!buf)
 		return -ENOMEM;
 
+	// 互斥锁：防止多个进程/线程同时发起SPI读写，避免SPI事务错乱
 	mutex_lock(&priv->lock);
+	// 底层SPI读：从flash地址 *ppos 读出 n 字节到内核buf
 	ret = w25q64_read_data(priv, (u32)*ppos, buf, n);
 	mutex_unlock(&priv->lock);
 
+	// 底层SPI读失败，释放内存，返回错误
 	if (ret) {
 		kfree(buf);
 		return ret;
 	}
 
+	// 把内核缓冲区的数据拷贝到用户态地址空间；copy_to_user失败返回-EFAULT
 	if (copy_to_user(ubuf, buf, n)) {
 		kfree(buf);
 		return -EFAULT;
 	}
 
+	// 释放内核临时缓冲区
 	kfree(buf);
+	// 更新文件偏移指针，下一次read会从这个新位置继续读
 	*ppos += n;
+	// 返回成功读到的字节数，给用户态read拿到
 	return n;
 }
 
+
 /*
- * write(fd, buf, n)：
- *   *ppos 是起始地址，按 256 字节页切分后逐页编程。
- *   注意：这里不做"先擦除"！NOR flash 只能 1->0，
- *   对没擦过的区域写，得到的是"旧值 & 新值"。
- *   擦除由用户通过 ioctl（ERASE_SECTOR / ERASE_CHIP）显式发起，
- *   驱动只做最原始、最诚实的那一层，这样板子上看到的行为和芯片手册一致。
- */
+* write(fd, buf, n)：file_operations 对应的 write 回调
+* @file：打开的设备文件句柄，private_data 指向我们的w25q64_dev私有结构体
+* @ubuf：用户态传入的数据缓冲区（__user标记，内核不能直接访问）
+* @count：用户希望写入的字节总数
+* @ppos：文件偏移指针，入参是本次写入起始Flash地址；出参用于更新偏移
+* 返回值：成功返回本次写入字节数；负数代表错误码
+*
+* 核心设计约定（非常关键）：
+*   *ppos 对应Flash内部字节地址；写入会按照W25Q的256B页边界自动切分，逐段页编程
+*   驱动【不自动擦除扇区】！！
+*   NOR Flash硬件规则：bit只能 1 -> 0；如果对应扇区没有预先擦除（擦除后是0xFF），
+*   直接写得到的结果 = 旧值 & 新值，不是预期的数据覆盖。
+*   擦除动作交给用户态ioctl(W25Q64_IOC_ERASE_SECTOR / ERASE_CHIP)手动触发
+*   驱动只封装原始硬件页编程命令，行为和芯片datasheet完全一致，不做RMW封装
+*/
+// 这个驱动的设计约定：擦除交给用户态手动控制，驱动底层 `write` / `page_program` 本身不会自动做擦除！
 static ssize_t w25q64_write(struct file *file, const char __user *ubuf,
-			    size_t count, loff_t *ppos)
+	size_t count, loff_t *ppos)
 {
 	struct w25q64_dev *priv = file->private_data;
 	size_t n, off;
 	u8 *buf;
 	int ret;
 
+	// 偏移不能是负数，非法地址
 	if (*ppos < 0)
 		return -EINVAL;
 
+	// 写入起始地址已经超过Flash总容量，没有空间
 	if (*ppos >= priv->size)
 		return -ENOSPC;
 
+	/*
+	* 计算本次实际可写入字节数：
+	* 取【用户想要写count字节】和【从当前偏移到Flash末尾剩余字节】的较小值
+	* 防止越界写入Flash芯片外部
+	*/
 	n = min_t(size_t, count, priv->size - (u32)*ppos);
 	if (!n)
 		return 0;
 
-	/* 先把用户数据整体拷到内核缓冲，避免带着用户指针进 SPI 事务 */
+	/*
+	* memdup_user：内核封装函数，自动分配内核缓冲区 + 把用户ubuf拷贝到内核空间
+	* 等价于 kmalloc + copy_from_user，代码更简洁
+	* 原因：SPI底层DMA传输不能直接使用用户态虚拟地址，必须在内核缓冲区操作
+	*/
 	buf = memdup_user(ubuf, n);
 	if (IS_ERR(buf))
 		return PTR_ERR(buf);
 
 	ret = 0;
+	// 互斥锁：保护SPI总线，防止多进程并发读写打乱SPI时序
 	mutex_lock(&priv->lock);
 
+	/*
+	* off：已经处理完的字节偏移，从0开始，循环直到写完n字节
+	* W25Q页编程限制：一次页编程命令不能跨256B页边界，跨页会发生数据回绕（硬件特性）
+	* 所以必须循环切分，保证每一次w25q64_page_program都不跨页
+	*/
 	for (off = 0; off < n; off += ret) {
+		// 当前这一段的Flash物理地址
 		u32 addr = (u32)*ppos + off;
+		// 当前地址在本页内的偏移：addr % 256
 		size_t page_off = addr % priv->page_size;
+		// chunk：这一轮最多能写多少字节，保证不会冲出当前页
 		size_t chunk = min_t(size_t, n - off, priv->page_size - page_off);
 
-		/* 每次循环写一页内的一小段，chunk 保证不跨页 */
+		/*
+		* 调用底层页编程：只写chunk个字节，地址addr，数据来自buf+off
+		* page_program内部逻辑：发写使能WEL、发送页编程SPI命令+地址+数据、等待BUSY位清零
+		*/
 		ret = w25q64_page_program(priv, addr, buf + off, chunk);
 		if (ret)
-			break;
+			break; // 任意一段出错，立刻跳出循环，不再继续写
 	}
 
 	mutex_unlock(&priv->lock);
+	// 释放memdup_user分配的内核缓冲区
 	kfree(buf);
 
+	// 循环里任意一次页编程失败，直接返回错误码
 	if (ret)
 		return ret;
 
+	// 全部写完，更新文件偏移指针，下一次write从这个新地址继续
 	*ppos += n;
+	// 返回成功写入总字节数，给用户态write拿到
 	return n;
 }
 
@@ -609,6 +764,9 @@ static long w25q64_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
 		u8 status;
 
 		/* 这里现读一次芯片，用户看到的是"此刻"的真实状态 */
+		// W25Q64 状态寄存器 SR1（读命令 0x05，就是你 w25q64_read_status 读的这个 u8）
+		// bit7  bit6  bit5  bit4  bit3  bit2  bit1  bit0
+		// SRP0  SEC   TB   BP2   BP1   BP0  WEL  BUSY
 		mutex_lock(&priv->lock);
 		ret = w25q64_read_status(priv, &status);
 		mutex_unlock(&priv->lock);
@@ -644,16 +802,20 @@ static long w25q64_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
 	case W25Q64_IOC_ERASE_SECTOR: {
 		u32 addr;
 
+		// 从用户空间取出传入的地址参数
 		if (get_user(addr, (u32 __user *)arg))
 			return -EFAULT;
 
 		/* 对齐到扇区边界：擦除是"整扇区"操作，不可能只擦一半 */
+		// 扇区大小是 4096，sector_size - 1 = 0xFFF；~0xFFF就是掩码，把低 12bit 清 0
+		// 例：用户传 0x1005 → 自动修正为 0x1000
+		// 原因：W25Q 扇区擦除命令只能擦整个 4K 扇区，不支持擦除扇区内一部分
 		addr &= ~(priv->sector_size - 1);
-		if (addr >= priv->size)
+		if (addr >= priv->size)	// 合法性校验：地址不能超过Flash总容量
 			return -EINVAL;
 
 		mutex_lock(&priv->lock);
-		ret = w25q64_sector_erase(priv, addr);
+		ret = w25q64_sector_erase(priv, addr);	// 调用底层函数，执行扇区擦除
 		mutex_unlock(&priv->lock);
 		break;
 	}
@@ -719,6 +881,9 @@ static int w25q64_probe(struct spi_device *spi)
 	 */
 	spi->mode = SPI_MODE_0;
 	spi->bits_per_word = 8;
+	// spi_setup()会把你设置好的 mode、bits_per_word、spi->max_speed_hz 下发给 SPI 控制器驱动
+	// 成功返回后，这个 spi_device 就具备了收发 SPI 报文的能力
+	// spi 需要设置总线参数所以需要setuo，i2c除了时钟需要设置其他的就是固定的了所以不需要setup
 	ret = spi_setup(spi);
 	if (ret) {
 		dev_err(&spi->dev, "spi_setup 失败: %d\n", ret);

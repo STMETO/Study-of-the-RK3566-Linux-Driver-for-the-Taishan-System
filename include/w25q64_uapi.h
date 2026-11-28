@@ -30,7 +30,7 @@
  */
 struct w25q64_info {
 	__u32 jedec_id;		/* 24 位 JEDEC ID，例如 W25Q64 是 0xEF4017 */
-	__u32 size;		/* 芯片总容量，单位字节 */
+	__u32 size;			/* 芯片总容量，单位字节 */
 	__u32 sector_size;	/* 擦除扇区大小，固定 4096 */
 	__u32 page_size;	/* 编程页大小，固定 256 */
 	__u32 speed_hz;		/* 当前 SPI 时钟频率 */
